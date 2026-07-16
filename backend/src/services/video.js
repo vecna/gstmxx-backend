@@ -1,22 +1,37 @@
 const ffmpeg = require('fluent-ffmpeg');
 const path = require('path');
 const fs = require('fs');
+const {
+   STORAGE_INCOMING_DIR,
+   STORAGE_APPROVED_DIR,
+   STORAGE_THUMBNAILS_DIR
+} = require('../paths');
 
 /**
- * Pipeline di normalizzazione video pre-pubblicazione.
- * @param {string} inputFilename - Nome del file nella cartella storage/incoming/
- * @returns {Promise<{videoPath: string, thumbnailName: string}>} Paths dei file elaborati.
+ * Video normalization pipeline executed before publication.
+ * Optimizes the video using ffmpeg, strips metadata for privacy, and generates a poster frame thumbnail.
+ * 
+ * @param {string} inputFilename - Name of the file in the storage/incoming/ directory.
+ * @returns {Promise<{videoName: string, thumbnailName: string|null}>} Resolves with the names of the processed files.
  */
 function processApprovedVideo(inputFilename) {
    return new Promise((resolve, reject) => {
-      const inputPath = path.resolve(__dirname, '../../storage/incoming/', inputFilename);
+      const inputPath = path.join(STORAGE_INCOMING_DIR, inputFilename);
       const outputName = `pub-${path.parse(inputFilename).name}.mp4`;
-      const outputPath = path.resolve(__dirname, '../../storage/approved/', outputName);
-      const thumbnailDir = path.resolve(__dirname, '../../storage/thumbnails/');
+      const outputPath = path.join(STORAGE_APPROVED_DIR, outputName);
+      const thumbnailDir = STORAGE_THUMBNAILS_DIR;
       const thumbnailName = `thumb-${path.parse(inputFilename).name}.png`;
 
       if (!fs.existsSync(inputPath)) {
          return reject(new Error(`File sorgente non trovato: ${inputPath}`));
+      }
+
+      if (process.env.NODE_ENV === 'test' && process.env.GSTMXX_MOCK_VIDEO_PROCESSING === '1') {
+         fs.copyFileSync(inputPath, outputPath);
+         return resolve({
+            videoName: outputName,
+            thumbnailName: null
+         });
       }
 
       // 1. Pipeline di ottimizzazione e sanitizzazione con ffmpeg

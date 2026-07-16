@@ -1,44 +1,115 @@
+const { bootstrapRuntime } = require('./bootstrap');
+
+bootstrapRuntime();
+
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const uploadsRouter = require('./routes/uploads');
 const adminRouter = require('./routes/admin');
 const publicRouter = require('./routes/public'); // Importazione del nuovo router dei feed RSS
-const { activityPubMiddleware } = require('./services/activitypub'); // Importazione del middleware Fedify
+const { startStaleUploadCleanup } = require('./services/cleanup');
 
-const app = express();
 const PORT = process.env.PORT || 3000;
+const AP_ENABLED = /^(1|true|yes|on)$/i.test(process.env.GSTMXX_ENABLE_AP || '');
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+function uploadRateLimitMax() {
+   const parsed = Number.parseInt(process.env.GSTMXX_UPLOAD_RATE_LIMIT_MAX || '5', 10);
+   return Number.isFinite(parsed) && parsed > 0 ? parsed : 5;
+}
 
-// Rate limit per rotte ad alto impatto prestazionale (Threat mitigation)
-const uploadLimiter = rateLimit({
-   windowMs: 15 * 60 * 1000,
-   max: 5,
-   message: { ok: false, message: 'Troppi tentativi. Riprova più tardi.' },
-   standardHeaders: true,
-   legacyHeaders: false,
- });
+function isolateMiddleware(label, middleware) {
+   return (req, res, next) => {
+      try {
+         const result = middleware(req, res, (err) => {
+            if (err) {
+               console.error(`[Ghostmaxxing Backend] ${label} route error:`, err);
+            }
+            next(err);
+         });
 
-// 1. Iniezione dell'infrastruttura di federazione ActivityPub (Intercetta le chiamate degli attori e WebFinger)
-app.use(activityPubMiddleware);
+         if (result && typeof result.catch === 'function') {
+            result.catch((err) => {
+               console.error(`[Ghostmaxxing Backend] ${label} async route error:`, err);
+               next(err);
+            });
+         }
+      } catch (err) {
+         console.error(`[Ghostmaxxing Backend] ${label} sync route error:`, err);
+         next(err);
+      }
+   };
+}
 
-// 2. Rotte dei Feed RSS pubblici e a bassa frizione
-app.use('/feed', publicRouter);
+function createApp() {
+   const app = express();
 
-// 3. Rotta pubblica per l'invio degli asset dai workshop
-app.use('/api/uploads', uploadLimiter, uploadsRouter);
+   app.use(express.json());
+   app.use(express.urlencoded({ extended: true }));
 
-// 4. Rotta privata di amministrazione e moderazione umana
-app.use('/api/admin', adminRouter);
+   // Rate limit per rotte ad alto impatto prestazionale (Threat mitigation)
+   const uploadLimiter = rateLimit({
+      windowMs: 15 * 60 * 1000,
+      max: uploadRateLimitMax(),
+      message: { ok: false, message: 'Troppi tentativi. Riprova più tardi.' },
+      standardHeaders: true,
+      legacyHeaders: false,
+   });
 
-app.use((err, req, res, next) => {
-   if (err instanceof Error) {
-      return res.status(400).json({ ok: false, message: err.message });
+   // 1. Infrastruttura ActivityPub. Disattivata di default finche B7 non riscrive Fedify correttamente.
+   if (AP_ENABLED) {
+      const { activityPubMiddleware } = require('./services/activitypub');
+      app.use(isolateMiddleware('ActivityPub', activityPubMiddleware));
+      console.log('[Ghostmaxxing Backend] ActivityPub enabled via GSTMXX_ENABLE_AP.');
+   } else {
+      console.log('[Ghostmaxxing Backend] ActivityPub disabled. Set GSTMXX_ENABLE_AP=1 to enable it.');
    }
-   return res.status(500).json({ ok: false, message: 'Errore generico non gestito nel backend.' });
-});
 
-app.listen(PORT, () => {
-   console.log(`[Ghostmaxxing Backend] Server avviato ed aperto al Fediverso sulla porta ${PORT}`);
-});
+   // 2. Rotte dei Feed RSS pubblici e a bassa frizione
+   app.use('/feed', isolateMiddleware('feed', publicRouter));
+
+   // 3. Rotta pubblica per l'invio degli asset dai workshop
+   app.use('/api/uploads', uploadLimiter, isolateMiddleware('uploads', uploadsRouter));
+
+   // 4. Rotta privata di amministrazione e moderazione umana
+   app.use('/api/admin', isolateMiddleware('admin', adminRouter));
+
+   app.use((req, res) => {
+      return res.status(404).json({ ok: false, message: 'Risorsa non trovata.' });
+   });
+
+   app.use((err, req, res, next) => {
+      if (res.headersSent) {
+         return next(err);
+      }
+
+      console.error('[Ghostmaxxing Backend] Request isolated:', err);
+
+      if (err instanceof Error) {
+         return res.status(err.status || err.statusCode || 400).json({ ok: false, message: err.message });
+      }
+      return res.status(500).json({ ok: false, message: 'Errore generico non gestito nel backend.' });
+   });
+
+   return app;
+}
+
+function startServer() {
+   const app = createApp();
+   if (process.env.NODE_ENV !== 'test') {
+      startStaleUploadCleanup();
+   }
+   return app.listen(PORT, () => {
+      console.log(`[Ghostmaxxing Backend] Server avviato sulla porta ${PORT}`);
+   });
+}
+
+if (require.main === module) {
+   startServer();
+}
+
+module.exports = {
+   createApp,
+   startServer,
+   isolateMiddleware,
+   uploadRateLimitMax
+};

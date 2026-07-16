@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const db = require('../db');
 const { processApprovedVideo } = require('../services/video');
+const { STORAGE_INCOMING_DIR } = require('../paths');
 
 // Configurazione credenziali di moderazione (sostituire o agganciare a process.env in produzione)
 const ADMIN_USER = process.env.GSTMXX_ADMIN_USER || 'admin';
@@ -68,12 +69,12 @@ router.post('/approve/:id', async (req, res) => {
       // Aggiornamento dello stato sul DB transazionale
       db.prepare(`
          UPDATE uploads 
-         SET status = 'approved', filename = ?, moderated_at = CURRENT_TIMESTAMP 
+         SET status = 'approved', filename = ?, thumbnail_filename = ?, moderated_at = CURRENT_TIMESTAMP 
          WHERE id = ?
-      `).run(processed.videoName, id);
+      `).run(processed.videoName, processed.thumbnailName, id);
 
       // Eliminazione del file grezzo originale in incoming per non sprecare spazio
-      const originalPath = path.resolve(__dirname, '../../storage/incoming/', record.filename);
+      const originalPath = path.join(STORAGE_INCOMING_DIR, record.filename);
       if (fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
 
       // TODO: Nella Fase 4 inseriremo qui il trigger per l'emissione dell'evento su ActivityPub/RSS
@@ -107,7 +108,7 @@ router.post('/reject/:id', (req, res) => {
       db.prepare("UPDATE uploads SET status = 'rejected', moderated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
 
       // Eliminazione fisica definitiva dell'asset video non approvato
-      const fileToClean = path.resolve(__dirname, '../../storage/incoming/', record.filename);
+      const fileToClean = path.join(STORAGE_INCOMING_DIR, record.filename);
       if (fs.existsSync(fileToClean)) {
          fs.unlinkSync(fileToClean);
       }

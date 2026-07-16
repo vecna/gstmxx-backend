@@ -4,11 +4,15 @@ const multer = require('multer');
 const path = require('path');
 const crypto = require('crypto');
 const db = require('../db');
+const { STORAGE_INCOMING_DIR } = require('../paths');
+const { removeIfExists, removeUploadFiles } = require('../services/uploadFiles');
+const { validateUploadedVideo } = require('../services/videoValidation');
+const { emitDeleteForUpload } = require('../services/activitypub');
 
 // Configurazione dello storage temporaneo (cartella storage/incoming/)
 const storage = multer.diskStorage({
    destination: (req, file, cb) => {
-      cb(null, path.resolve(__dirname, '../../storage/incoming/'));
+      cb(null, STORAGE_INCOMING_DIR);
    },
    filename: (req, file, cb) => {
       // Generiamo un nome file casuale e sicuro per evitare directory traversal o sovrascritture
@@ -35,12 +39,20 @@ const upload = multer({
    limits: { fileSize: 15 * 1024 * 1024 } // 15 Megabytes
 });
 
+function tokenMatches(issuedToken, providedToken) {
+   if (!issuedToken || !providedToken) return false;
+
+   const issuedDigest = crypto.createHash('sha256').update(String(issuedToken)).digest();
+   const providedDigest = crypto.createHash('sha256').update(String(providedToken)).digest();
+   return crypto.timingSafeEqual(issuedDigest, providedDigest);
+}
+
 /**
  * @route   POST /api/uploads
  * @desc    Ricezione video brevi dai workshop con annesso consenso biometrico.
  * @access  Pubblico (con limitazione di frequenza/rate limit)
  */
-router.post('/', upload.single('video'), (req, res) => {
+router.post('/', upload.single('video'), async (req, res) => {
    try {
       if (!req.file) {
          return res.status(400).json({ ok: false, message: 'Nessun file video ricevuto.' });
@@ -57,7 +69,14 @@ router.post('/', upload.single('video'), (req, res) => {
 
       // Il consenso esplicito è un blocco vincolante per l'archiviazione e la successiva moderazione
       if (!consent_version) {
+         removeIfExists(req.file.path);
          return res.status(400).json({ ok: false, message: 'Il parametro consent_version è obbligatorio.' });
+      }
+
+      const isVideo = await validateUploadedVideo(req.file.path);
+      if (!isVideo) {
+         removeIfExists(req.file.path);
+         return res.status(400).json({ ok: false, message: 'Il file caricato non contiene un video valido.' });
       }
 
       // Generazione identificativi univoci e token di cancellazione autonomo (Opzione 2 + 4)
@@ -92,6 +111,64 @@ router.post('/', upload.single('video'), (req, res) => {
    } catch (err) {
       console.error('[Upload Route Error]:', err);
       return res.status(500).json({ ok: false, message: 'Errore interno durante l\'elaborazione dell\'upload.' });
+   }
+});
+
+/**
+ * @route   DELETE /api/uploads/:id
+ * @desc    Cancellazione autonoma autenticata dal delete token emesso all'upload.
+ * @access  Pubblico con token opaco
+ */
+router.delete('/:id', async (req, res) => {
+   const { id } = req.params;
+   const providedToken = req.get('X-Delete-Token');
+
+   try {
+      const record = db.prepare(`
+         SELECT id, filename, thumbnail_filename, status, delete_token, created_at
+         FROM uploads
+         WHERE id = ?
+      `).get(id);
+
+      if (!record) {
+         return res.status(404).json({ ok: false, message: 'Upload non trovato.' });
+      }
+
+      if (record.status === 'deleted' || record.status === 'rejected') {
+         return res.status(410).json({ ok: false, message: 'Upload già rimosso.' });
+      }
+
+      if (!tokenMatches(record.delete_token, providedToken)) {
+         return res.status(403).json({ ok: false, message: 'Delete token non valido.' });
+      }
+
+      const wasApproved = record.status === 'approved';
+      const update = db.prepare(`
+         UPDATE uploads
+         SET status = 'deleted', moderated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND status IN ('pending', 'approved')
+      `).run(id);
+
+      if (update.changes < 1) {
+         return res.status(410).json({ ok: false, message: 'Upload già rimosso.' });
+      }
+
+      const removedFiles = removeUploadFiles(record);
+
+      let federation = { skipped: true };
+      if (wasApproved) {
+         federation = await emitDeleteForUpload(record);
+      }
+
+      return res.json({
+         ok: true,
+         message: 'Upload cancellato.',
+         removedFiles: removedFiles.length,
+         federation
+      });
+   } catch (err) {
+      console.error('[Upload Delete Route Error]:', err);
+      return res.status(500).json({ ok: false, message: 'Errore interno durante la cancellazione dell\'upload.' });
    }
 });
 
