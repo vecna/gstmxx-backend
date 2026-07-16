@@ -1,0 +1,18 @@
+backend/
+  ├── package.json
+  ├── data/
+  │    └── ghostmaxxing.sqlite
+  ├── storage/
+  │    ├── incoming/          ← Upload grezzi pre-moderazione
+  │    ├── approved/          ← Video normalizzati approvati
+  │    └── thumbnails/        ← Anteprime/Poster generati
+  └── src/
+       ├── server.js          ← Entrypoint Express
+       ├── db.js              ← Inizializzazione SQLite (better-sqlite3)
+       ├── routes/
+       │    ├── uploads.js    ← POST /api/uploads
+       │    ├── admin.js      ← /admin (Moderazione + Basic Auth)
+       │    └── public.js     ← GET /feed/* e JSON dei plugin
+       └── services/
+            ├── video.js      ← Elaborazione ffmpeg
+            └── activitypub.js ← Logica Fedify
