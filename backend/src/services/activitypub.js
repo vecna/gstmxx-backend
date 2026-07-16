@@ -22,12 +22,16 @@ async function initActivityPub() {
    // Importazione dinamica dei moduli ESM nativi di Fedify
    const {
       Accept,
+      Create,
       createFederation,
       Delete,
       Endpoints,
       Follow,
+      Image,
       MemoryKvStore,
+      Note,
       Person,
+      PUBLIC_COLLECTION,
       Tombstone,
       Undo
    } = await getFedify();
@@ -115,8 +119,63 @@ async function initActivityPub() {
          }
       });
 
-   federationInstance.__gstmxxClasses = { Delete, Tombstone };
+   federationInstance.__gstmxxClasses = { Create, Delete, Image, Note, PUBLIC_COLLECTION, Tombstone };
    return federationInstance;
+}
+
+function uploadActor(upload) {
+   return upload.kind === 'clipboard' ? 'clipboard' : 'video';
+}
+
+function uploadPublicPath(upload) {
+   return upload.kind === 'clipboard' ? `/clipboard/${upload.id}` : `/videos/${upload.id}`;
+}
+
+async function emitCreateForUpload(upload) {
+   if (!isActivityPubEnabled()) {
+      return { skipped: true, reason: 'activitypub-disabled' };
+   }
+
+   try {
+      const fed = await initActivityPub();
+      const { Create, Image, Note, PUBLIC_COLLECTION } = fed.__gstmxxClasses || await getFedify();
+      const actorHandle = uploadActor(upload);
+      const ctx = fed.createContext(new URL(BASE_URL), undefined);
+      const actor = ctx.getActorUri(actorHandle);
+      const publicUrl = new URL(uploadPublicPath(upload), BASE_URL);
+      const object = upload.kind === 'clipboard'
+         ? new Image({
+            id: publicUrl,
+            name: upload.user_note || 'Ghostmaxxing clipboard image',
+            url: publicUrl,
+            mediaType: 'image/png',
+            attribution: actor
+         })
+         : new Note({
+            id: publicUrl,
+            name: 'Ghostmaxxing workshop video',
+            content: upload.user_note || 'A moderated Ghostmaxxing workshop video was published.',
+            url: publicUrl,
+            attribution: actor
+         });
+
+      const activity = new Create({
+         id: new URL(`/federation/activities/create-${upload.id}-${Date.now()}`, BASE_URL),
+         actor,
+         object,
+         tos: [PUBLIC_COLLECTION]
+      });
+
+      await ctx.sendActivity({ identifier: actorHandle }, 'followers', activity, {
+         immediate: true,
+         preferSharedInbox: true
+      });
+
+      return { skipped: false };
+   } catch (err) {
+      console.error('[ActivityPub Create Emit Error]:', err);
+      return { skipped: false, failed: true, message: err.message };
+   }
 }
 
 async function emitDeleteForUpload(upload) {
@@ -127,16 +186,17 @@ async function emitDeleteForUpload(upload) {
    try {
       const fed = await initActivityPub();
       const { Delete, Tombstone } = fed.__gstmxxClasses || await getFedify();
+      const actorHandle = uploadActor(upload);
       const ctx = fed.createContext(new URL(BASE_URL), undefined);
-      const actor = ctx.getActorUri('video');
-      const objectId = new URL(`/videos/${upload.id}`, BASE_URL);
+      const actor = ctx.getActorUri(actorHandle);
+      const objectId = new URL(uploadPublicPath(upload), BASE_URL);
       const activity = new Delete({
          id: new URL(`/federation/activities/delete-${upload.id}-${Date.now()}`, BASE_URL),
          actor,
          object: new Tombstone({ id: objectId })
       });
 
-      await ctx.sendActivity({ identifier: 'video' }, 'followers', activity, {
+      await ctx.sendActivity({ identifier: actorHandle }, 'followers', activity, {
          immediate: true,
          preferSharedInbox: true
       });
@@ -170,6 +230,7 @@ async function activityPubMiddleware(req, res, next) {
 module.exports = {
    initActivityPub,
    activityPubMiddleware,
+   emitCreateForUpload,
    emitDeleteForUpload,
    isActivityPubEnabled
 };

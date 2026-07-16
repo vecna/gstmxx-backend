@@ -1,16 +1,14 @@
 const express = require('express');
+const fs = require('fs');
 const router = express.Router();
 const db = require('../db');
+const { GHOSTYLES_JSON_PATH } = require('../paths');
 
-// Configurazione dominio di riferimento per i link assoluti dei feed
-const BASE_URL = process.env.GSTMXX_BASE_URL || 'https://ghostyles.vecna.eu';
+const BASE_URL = process.env.GSTMXX_BASE_URL || 'https://ghostmaxxing.vecna.eu';
 
-/**
- * Funzione helper per l'escaping dei caratteri speciali all'interno dei nodi XML.
- */
 function escapeXml(unsafe) {
    if (!unsafe) return '';
-   return unsafe.replace(/[<>&'"]/g, (c) => {
+   return String(unsafe).replace(/[<>&'"]/g, (c) => {
       switch (c) {
          case '<': return '&lt;';
          case '>': return '&gt;';
@@ -22,28 +20,26 @@ function escapeXml(unsafe) {
    });
 }
 
-/**
- * Generatore generico di strutture XML RSS 2.0.
- */
 function buildRssFeed(title, description, items) {
    const now = new Date().toUTCString();
    let xml = `<?xml version="1.0" encoding="UTF-8" ?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
 <channel>
    <title>${escapeXml(title)}</title>
-   <link>${BASE_URL}</link>
+   <link>${escapeXml(BASE_URL)}</link>
    <description>${escapeXml(description)}</description>
-   <language>it-it</language>
+   <language>en</language>
    <lastBuildDate>${now}</lastBuildDate>
 `;
 
    items.forEach(item => {
+      const pubDate = new Date(item.created_at || Date.now()).toUTCString();
       xml += `   <item>
       <title>${escapeXml(item.title)}</title>
-      <link>${item.link}</link>
+      <link>${escapeXml(item.link)}</link>
       <description>${escapeXml(item.description)}</description>
-      <pubDate>${new Date(item.created_at).toUTCString()}</pubDate>
-      <guid isPermaLink="true">${item.link}</guid>
+      <pubDate>${pubDate}</pubDate>
+      <guid isPermaLink="true">${escapeXml(item.link)}</guid>
    </item>\n`;
    });
 
@@ -51,71 +47,122 @@ function buildRssFeed(title, description, items) {
    return xml;
 }
 
-/**
- * @route   GET /feed/videos.xml
- * @desc    Feed RSS dei video approvati e normalizzati originati dai workshop
- */
+function readGhostyles() {
+   try {
+      const raw = fs.readFileSync(GHOSTYLES_JSON_PATH, 'utf8');
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+   } catch (err) {
+      console.error('[Ghostyles Feed Error]:', err.message);
+      return [];
+   }
+}
+
+function uploadItem(row) {
+   const isClipboard = row.kind === 'clipboard';
+   const section = isClipboard ? 'clipboard' : 'videos';
+   return {
+      title: isClipboard ? `Clipboard image ${row.id}` : `Workshop video ${row.id}`,
+      link: `${BASE_URL}/${section}/${row.id}`,
+      description: `${row.user_note || 'No note provided.'} Ghostyle: ${row.ghostyle_id || 'none'}.`,
+      created_at: row.created_at
+   };
+}
+
 router.get('/videos.xml', (req, res) => {
    try {
       const rows = db.prepare(`
-         SELECT id, user_note, ghostyle_id, created_at 
-         FROM uploads 
-         WHERE status = 'approved' 
+         SELECT id, kind, user_note, ghostyle_id, created_at
+         FROM uploads
+         WHERE status = 'approved' AND kind = 'video'
          ORDER BY created_at DESC LIMIT 50
       `).all();
 
-      const items = rows.map(r => ({
-         title: `Video Camouflage Workshop ID ${r.id}`,
-         link: `${BASE_URL}/videos/${r.id}`,
-         description: `Note utente: ${r.user_note || 'Nessuna nota'}. Plugin utilizzato: ${r.ghostyle_id || 'Nessuno'}.`,
-         created_at: r.created_at
-      }));
-
       res.header('Content-Type', 'application/xml');
-      return res.send(buildRssFeed('Ghostmaxxing — Ultimi Video Camouflage', 'Archivio pubblico dei tentativi di elusione biometrica riusciti.', items));
+      return res.send(buildRssFeed(
+         'Ghostmaxxing - Workshop Videos',
+         'Moderated workshop videos published by Ghostmaxxing.',
+         rows.map(uploadItem)
+      ));
    } catch (err) {
-      return res.status(500).send('Errore durante la generazione del feed.');
+      return res.status(500).send('Feed generation failed.');
    }
 });
 
-/**
- * @route   GET /feed/ghostyles.xml
- * @desc    Placeholder Feed per la pubblicazione di nuovi plugin immessi nell'archivio
- */
 router.get('/ghostyles.xml', (req, res) => {
-   // In attesa della Fase 2 dell'archivio, restituiamo un feed vuoto valido
+   const items = readGhostyles().map((ghostyle) => ({
+      title: `Ghostyle: ${ghostyle.id}`,
+      link: `${BASE_URL}/${ghostyle.url}`,
+      description: `Adversarial appearance pattern ${ghostyle.id}.`,
+      created_at: '2026-07-01T00:00:00.000Z'
+   }));
+
    res.header('Content-Type', 'application/xml');
-   return res.send(buildRssFeed('Ghostmaxxing — Nuovi Ghostyles', 'Nuovi pattern e filtri avversariali rilasciati dalla community.', []));
+   return res.send(buildRssFeed(
+      'Ghostmaxxing - Ghostyles',
+      'Ghostyle patterns available for the Ghostmaxxing lab.',
+      items
+   ));
 });
 
-/**
- * @route   GET /feed/news.xml
- * @desc    Placeholder Feed per i comunicati politici ed editoriali del progetto
- */
 router.get('/news.xml', (req, res) => {
-   res.header('Content-Type', 'application/xml');
-   return res.send(buildRssFeed('Ghostmaxxing — Aggiornamenti del Progetto', 'Comunicati ed aggiornamenti dal Sindacato Universale Digitale NINA.', []));
-});
-
-/**
- * @route   GET /feed/all.xml
- * @desc    Aggregatore globale omnicomprensivo
- */
-router.get('/all.xml', (req, res) => {
    try {
       const rows = db.prepare(`
-         SELECT id, user_note, created_at FROM uploads WHERE status = 'approved' ORDER BY created_at DESC LIMIT 25
+         SELECT id, title, body, link, created_at
+         FROM news
+         ORDER BY created_at DESC LIMIT 50
       `).all();
-      const items = rows.map(r => ({
-         title: `Aggiornamento Workshop: Video Camouflage ${r.id}`,
-         link: `${BASE_URL}/videos/${r.id}`,
-         description: r.user_note || 'Nuovo asset normalizzato disponibile per l\'analisi visiva.',
-         created_at: r.created_at
+
+      const items = rows.map((row) => ({
+         title: row.title,
+         link: row.link || `${BASE_URL}/news/${row.id}`,
+         description: row.body,
+         created_at: row.created_at
       }));
+
       res.header('Content-Type', 'application/xml');
-      return res.send(buildRssFeed('Ghostmaxxing — Feed Globale', 'Tutti i flussi di informazione unificati.', items));
+      return res.send(buildRssFeed(
+         'Ghostmaxxing - News',
+         'Project updates from Ghostmaxxing.',
+         items
+      ));
    } catch (err) {
-      return res.status(500).send('Errore interno.');
+      return res.status(500).send('Feed generation failed.');
+   }
+});
+
+router.get('/all.xml', (req, res) => {
+   try {
+      const uploads = db.prepare(`
+         SELECT id, kind, user_note, ghostyle_id, created_at
+         FROM uploads
+         WHERE status = 'approved'
+         ORDER BY created_at DESC LIMIT 25
+      `).all().map(uploadItem);
+
+      const news = db.prepare(`
+         SELECT id, title, body, link, created_at
+         FROM news
+         ORDER BY created_at DESC LIMIT 25
+      `).all().map((row) => ({
+         title: row.title,
+         link: row.link || `${BASE_URL}/news/${row.id}`,
+         description: row.body,
+         created_at: row.created_at
+      }));
+
+      const items = uploads.concat(news)
+         .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+         .slice(0, 50);
+
+      res.header('Content-Type', 'application/xml');
+      return res.send(buildRssFeed(
+         'Ghostmaxxing - All Updates',
+         'All public Ghostmaxxing feeds in one stream.',
+         items
+      ));
+   } catch (err) {
+      return res.status(500).send('Feed generation failed.');
    }
 });
 

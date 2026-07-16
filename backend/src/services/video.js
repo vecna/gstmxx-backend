@@ -74,6 +74,27 @@ function processApprovedVideo(inputFilename) {
    });
 }
 
+function processApprovedClipboard(inputFilename) {
+   return new Promise((resolve, reject) => {
+      const inputPath = path.join(STORAGE_INCOMING_DIR, inputFilename);
+      const outputName = `pub-${path.parse(inputFilename).name}.png`;
+      const outputPath = path.join(STORAGE_APPROVED_DIR, outputName);
+
+      if (!fs.existsSync(inputPath)) {
+         return reject(new Error(`File sorgente non trovato: ${inputPath}`));
+      }
+
+      fs.copyFile(inputPath, outputPath, (err) => {
+         if (err) return reject(err);
+         return resolve({
+            videoName: outputName,
+            thumbnailName: null
+         });
+      });
+   });
+}
+
 module.exports = {
-   processApprovedVideo
+   processApprovedVideo,
+   processApprovedClipboard
 };

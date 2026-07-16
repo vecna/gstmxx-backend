@@ -2,9 +2,13 @@ const express = require('express');
 const router = express.Router();
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const db = require('../db');
-const { processApprovedVideo } = require('../services/video');
+const { processApprovedClipboard, processApprovedVideo } = require('../services/video');
+const { emitCreateForUpload } = require('../services/activitypub');
 const { STORAGE_INCOMING_DIR } = require('../paths');
+
+const BASE_URL = process.env.GSTMXX_BASE_URL || 'https://ghostmaxxing.vecna.eu';
 
 // Configurazione credenziali di moderazione (sostituire o agganciare a process.env in produzione)
 const ADMIN_USER = process.env.GSTMXX_ADMIN_USER || 'admin';
@@ -33,19 +37,77 @@ function basicAuthMiddleware(req, res, next) {
 // Applichiamo la protezione Basic Auth a tutte le rotte di questo modulo
 router.use(basicAuthMiddleware);
 
+function publicUrlForUpload(upload) {
+   const section = upload.kind === 'clipboard' ? 'clipboard' : 'videos';
+   return `${BASE_URL}/${section}/${upload.id}`;
+}
+
+router.get('/', (req, res) => {
+   return res.sendFile(path.resolve(__dirname, '../admin/index.html'));
+});
+
 /**
  * @route   GET /api/admin/pending
  * @desc    Elenca gli upload in attesa di revisione umana
  */
 router.get('/pending', (req, res) => {
    try {
+      const kind = ['video', 'clipboard'].includes(req.query.kind) ? req.query.kind : null;
       const rows = db.prepare(`
-         SELECT id, consent_version, ghostyle_id, app_version, user_note, metrics_json, created_at 
+         SELECT id, kind, consent_version, ghostyle_id, app_version, user_note, metrics_json, created_at
          FROM uploads 
-         WHERE status = 'pending' 
+         WHERE status = 'pending'
+           AND (? IS NULL OR kind = ?)
          ORDER BY created_at ASC
-      `).all();
-      return res.json({ ok: true, pending: rows });
+      `).all(kind, kind);
+      return res.json({
+         ok: true,
+         pending: rows.map((row) => ({
+            ...row,
+            mediaUrl: `/api/admin/media/${row.id}`,
+            publicUrl: publicUrlForUpload(row)
+         }))
+      });
+   } catch (err) {
+      return res.status(500).json({ ok: false, message: err.message });
+   }
+});
+
+router.get('/media/:id', (req, res) => {
+   try {
+      const record = db.prepare('SELECT filename, kind FROM uploads WHERE id = ? AND status = ?').get(req.params.id, 'pending');
+      if (!record) {
+         return res.status(404).json({ ok: false, message: 'Pending upload not found.' });
+      }
+
+      const mediaPath = path.join(STORAGE_INCOMING_DIR, record.filename);
+      if (!fs.existsSync(mediaPath)) {
+         return res.status(404).json({ ok: false, message: 'Pending media file not found.' });
+      }
+
+      if (record.kind === 'clipboard') {
+         res.type('image/png');
+      }
+      return res.sendFile(mediaPath);
+   } catch (err) {
+      return res.status(500).json({ ok: false, message: err.message });
+   }
+});
+
+router.post('/news', (req, res) => {
+   try {
+      const { title, body, link } = req.body || {};
+      if (!title || !body) {
+         return res.status(400).json({ ok: false, message: 'title and body are required.' });
+      }
+
+      const id = crypto.randomUUID();
+      db.prepare(`
+         INSERT INTO news (id, title, body, link)
+         VALUES (?, ?, ?, ?)
+      `).run(id, title, body, link || null);
+
+      return res.status(201).json({ ok: true, id });
    } catch (err) {
       return res.status(500).json({ ok: false, message: err.message });
    }
@@ -58,13 +120,19 @@ router.get('/pending', (req, res) => {
 router.post('/approve/:id', async (req, res) => {
    const { id } = req.params;
    try {
-      const record = db.prepare('SELECT filename FROM uploads WHERE id = ? AND status = ?').get(id, 'pending');
+      const record = db.prepare(`
+         SELECT id, filename, kind, ghostyle_id, user_note
+         FROM uploads
+         WHERE id = ? AND status = ?
+      `).get(id, 'pending');
       if (!record) {
          return res.status(404).json({ ok: false, message: 'Upload in stato pending non trovato.' });
       }
 
       // Esecuzione della pipeline ffmpeg asincrona
-      const processed = await processApprovedVideo(record.filename);
+      const processed = record.kind === 'clipboard'
+         ? await processApprovedClipboard(record.filename)
+         : await processApprovedVideo(record.filename);
 
       // Aggiornamento dello stato sul DB transazionale
       db.prepare(`
@@ -77,13 +145,21 @@ router.post('/approve/:id', async (req, res) => {
       const originalPath = path.join(STORAGE_INCOMING_DIR, record.filename);
       if (fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
 
-      // TODO: Nella Fase 4 inseriremo qui il trigger per l'emissione dell'evento su ActivityPub/RSS
+      const published = {
+         ...record,
+         filename: processed.videoName,
+         thumbnail_filename: processed.thumbnailName
+      };
+      const federation = await emitCreateForUpload(published);
 
       return res.json({
          ok: true,
-         message: 'Video normalizzato e pubblicato con successo.',
+         message: 'Upload published successfully.',
+         kind: record.kind,
          video: processed.videoName,
-         thumbnail: processed.thumbnailName
+         thumbnail: processed.thumbnailName,
+         publicUrl: publicUrlForUpload(record),
+         federation
       });
 
    } catch (err) {
@@ -99,7 +175,7 @@ router.post('/approve/:id', async (req, res) => {
 router.post('/reject/:id', (req, res) => {
    const { id } = req.params;
    try {
-      const record = db.prepare('SELECT filename FROM uploads WHERE id = ? AND status = ?').get(id, 'pending');
+      const record = db.prepare('SELECT filename, kind FROM uploads WHERE id = ? AND status = ?').get(id, 'pending');
       if (!record) {
          return res.status(404).json({ ok: false, message: 'Upload in stato pending non trovato.' });
       }

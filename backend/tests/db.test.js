@@ -14,6 +14,10 @@ describe('db initialization and migrations', () => {
       const keysSql = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'keys'").get();
       expect(keysSql).toBeDefined();
       expect(keysSql.name).toBe('keys');
+
+      const newsSql = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'news'").get();
+      expect(newsSql).toBeDefined();
+      expect(newsSql.name).toBe('news');
    });
 
    test('should be able to insert and retrieve from uploads', () => {
@@ -27,5 +31,6 @@ describe('db initialization and migrations', () => {
       expect(row).toBeDefined();
       expect(row.filename).toBe('test.mp4');
       expect(row.status).toBe('pending');
+      expect(row.kind).toBe('video');
    });
 });

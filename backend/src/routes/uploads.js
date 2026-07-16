@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const db = require('../db');
 const { STORAGE_INCOMING_DIR } = require('../paths');
 const { removeIfExists, removeUploadFiles } = require('../services/uploadFiles');
-const { validateUploadedVideo } = require('../services/videoValidation');
+const { validateUploadedPng, validateUploadedVideo } = require('../services/videoValidation');
 const { emitDeleteForUpload } = require('../services/activitypub');
 
 // Configurazione dello storage temporaneo (cartella storage/incoming/)
@@ -24,11 +24,11 @@ const storage = multer.diskStorage({
 
 // Filtro di sicurezza preventivo sui MIME-type accettati dal browser
 const fileFilter = (req, file, cb) => {
-   const allowedTypes = ['video/mp4', 'video/webm', 'video/ogg'];
+   const allowedTypes = ['video/mp4', 'video/webm', 'video/ogg', 'image/png'];
    if (allowedTypes.includes(file.mimetype)) {
       cb(null, true);
    } else {
-      cb(new Error('Formato file non valido. Sono ammessi solo video (MP4, WebM, OGG).'), false);
+      cb(new Error('Formato file non valido. Sono ammessi video (MP4, WebM, OGG) o immagini PNG.'), false);
    }
 };
 
@@ -47,6 +47,12 @@ function tokenMatches(issuedToken, providedToken) {
    return crypto.timingSafeEqual(issuedDigest, providedDigest);
 }
 
+function normalizeKind(kind) {
+   if (!kind || kind === 'video') return 'video';
+   if (kind === 'clipboard') return 'clipboard';
+   return null;
+}
+
 /**
  * @route   POST /api/uploads
  * @desc    Ricezione video brevi dai workshop con annesso consenso biometrico.
@@ -61,11 +67,17 @@ router.post('/', upload.single('video'), async (req, res) => {
       // Estrazione e validazione dei campi del contratto di payload v1.0
       const {
          consent_version,
+         kind: rawKind,
          ghostyle_id,
          app_version,
          user_note,
          metrics_json
       } = req.body;
+      const kind = normalizeKind(rawKind);
+      if (!kind) {
+         removeIfExists(req.file.path);
+         return res.status(400).json({ ok: false, message: 'Il parametro kind deve essere video oppure clipboard.' });
+      }
 
       // Il consenso esplicito è un blocco vincolante per l'archiviazione e la successiva moderazione
       if (!consent_version) {
@@ -73,10 +85,12 @@ router.post('/', upload.single('video'), async (req, res) => {
          return res.status(400).json({ ok: false, message: 'Il parametro consent_version è obbligatorio.' });
       }
 
-      const isVideo = await validateUploadedVideo(req.file.path);
-      if (!isVideo) {
+      const isAcceptedMedia = kind === 'clipboard'
+         ? validateUploadedPng(req.file.path)
+         : await validateUploadedVideo(req.file.path);
+      if (!isAcceptedMedia) {
          removeIfExists(req.file.path);
-         return res.status(400).json({ ok: false, message: 'Il file caricato non contiene un video valido.' });
+         return res.status(400).json({ ok: false, message: kind === 'clipboard' ? 'Il file caricato non contiene una PNG valida.' : 'Il file caricato non contiene un video valido.' });
       }
 
       // Generazione identificativi univoci e token di cancellazione autonomo (Opzione 2 + 4)
@@ -85,13 +99,14 @@ router.post('/', upload.single('video'), async (req, res) => {
 
       // Inserimento transazionale nel database SQLite dello stato 'pending'
       const insertStmt = db.prepare(`
-         INSERT INTO uploads (id, filename, consent_version, ghostyle_id, app_version, user_note, metrics_json, delete_token, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+         INSERT INTO uploads (id, filename, kind, consent_version, ghostyle_id, app_version, user_note, metrics_json, delete_token, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
       `);
 
       insertStmt.run(
          uploadId,
          req.file.filename,
+         kind,
          consent_version,
          ghostyle_id || null,
          app_version || null,
@@ -126,6 +141,7 @@ router.delete('/:id', async (req, res) => {
    try {
       const record = db.prepare(`
          SELECT id, filename, thumbnail_filename, status, delete_token, created_at
+              , kind
          FROM uploads
          WHERE id = ?
       `).get(id);

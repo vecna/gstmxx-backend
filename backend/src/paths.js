@@ -49,6 +49,10 @@ const STORAGE_THUMBNAILS_DIR = path.join(STORAGE_DIR, 'thumbnails');
  * @type {string}
  */
 const DB_PATH = process.env.GSTMXX_DB_PATH || (isTest ? ':memory:' : path.join(DATA_DIR, 'ghostmaxxing.sqlite'));
+const GHOSTYLES_JSON_PATH = path.resolve(
+   process.env.GSTMXX_GHOSTYLES_JSON_PATH ||
+   path.join(ROOT_DIR, '..', '..', 'ghostati', 'ghostyles.json')
+);
 
 module.exports = {
    ROOT_DIR,
@@ -57,5 +61,6 @@ module.exports = {
    STORAGE_INCOMING_DIR,
    STORAGE_APPROVED_DIR,
    STORAGE_THUMBNAILS_DIR,
-   DB_PATH
+   DB_PATH,
+   GHOSTYLES_JSON_PATH
 };

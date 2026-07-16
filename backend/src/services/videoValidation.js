@@ -1,4 +1,5 @@
 const ffmpeg = require('fluent-ffmpeg');
+const fs = require('fs');
 
 /**
  * Validates whether an uploaded file is a valid video by probing it with ffprobe
@@ -25,6 +26,20 @@ function validateUploadedVideo(filePath) {
    });
 }
 
+function validateUploadedPng(filePath) {
+   const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+   try {
+      const fd = fs.openSync(filePath, 'r');
+      const header = Buffer.alloc(signature.length);
+      fs.readSync(fd, header, 0, signature.length, 0);
+      fs.closeSync(fd);
+      return header.equals(signature);
+   } catch (err) {
+      return false;
+   }
+}
+
 module.exports = {
-   validateUploadedVideo
+   validateUploadedVideo,
+   validateUploadedPng
 };

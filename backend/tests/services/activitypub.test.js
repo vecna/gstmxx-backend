@@ -27,10 +27,14 @@ jest.mock('../../src/services/fedifyWrapper', () => ({
       createFederation: jest.fn().mockReturnValue(mockFederation),
       MemoryKvStore: jest.fn(),
       Accept: jest.fn(),
+      Create: jest.fn(),
       Delete: jest.fn(),
       Endpoints: jest.fn(),
       Follow: jest.fn(),
+      Image: jest.fn(),
       Person: jest.fn(),
+      Note: jest.fn(),
+      PUBLIC_COLLECTION: new URL('https://www.w3.org/ns/activitystreams#Public'),
       Tombstone: jest.fn(),
       Undo: jest.fn()
    })

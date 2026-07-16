@@ -4,6 +4,11 @@ const os = require('node:os');
 const path = require('node:path');
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gstmxx-layer1-'));
+const ghostylesManifestPath = path.join(tempRoot, 'ghostyles.json');
+fs.writeFileSync(ghostylesManifestPath, JSON.stringify([
+   { id: 'brush', url: 'ghostyles/brush.js' },
+   { id: 'soft-contour', url: 'ghostyles/soft-contour.js' }
+]));
 
 process.env.NODE_ENV = 'test';
 process.env.GSTMXX_ENABLE_AP = '0';
@@ -13,6 +18,7 @@ process.env.GSTMXX_DATA_DIR = path.join(tempRoot, 'data');
 process.env.GSTMXX_STORAGE_DIR = path.join(tempRoot, 'storage');
 process.env.GSTMXX_STALE_DAYS = '14';
 process.env.GSTMXX_UPLOAD_RATE_LIMIT_MAX = '100';
+process.env.GSTMXX_GHOSTYLES_JSON_PATH = ghostylesManifestPath;
 
 const db = require('../src/db');
 const { createApp } = require('../src/server');
@@ -22,7 +28,7 @@ const {
    STORAGE_THUMBNAILS_DIR
 } = require('../src/paths');
 const { cleanupStaleUploads } = require('../src/services/cleanup');
-const { ensureActorKeyPairs } = require('../src/services/keys');
+const { ACTOR_HANDLES, ensureActorKeyPairs } = require('../src/services/keys');
 
 let server;
 let baseUrl;
@@ -31,6 +37,7 @@ function resetDb() {
    db.prepare('DELETE FROM uploads').run();
    db.prepare('DELETE FROM ap_followers').run();
    db.prepare('DELETE FROM keys').run();
+   db.prepare('DELETE FROM news').run();
 }
 
 function resetStorage() {
@@ -43,9 +50,17 @@ function resetStorage() {
    }
 }
 
-async function uploadFixture(note = 'Layer-1 proof') {
+function authHeader() {
+   return `Basic ${Buffer.from('admin:cambiami-subito-2026').toString('base64')}`;
+}
+
+async function uploadFixture(note = 'Layer-1 proof', kind = 'video') {
    const form = new FormData();
-   form.set('video', new Blob(['fake video bytes'], { type: 'video/mp4' }), 'fixture.mp4');
+   const file = kind === 'clipboard'
+      ? new Blob([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00])], { type: 'image/png' })
+      : new Blob(['fake video bytes'], { type: 'video/mp4' });
+   form.set('video', file, kind === 'clipboard' ? 'fixture.png' : 'fixture.mp4');
+   form.set('kind', kind);
    form.set('consent_version', 'test-consent');
    form.set('ghostyle_id', 'smokey-eyes');
    form.set('app_version', 'test');
@@ -60,10 +75,9 @@ async function uploadFixture(note = 'Layer-1 proof') {
 }
 
 async function approveUpload(uploadId) {
-   const auth = Buffer.from('admin:cambiami-subito-2026').toString('base64');
    const response = await fetch(`${baseUrl}/api/admin/approve/${uploadId}`, {
       method: 'POST',
-      headers: { Authorization: `Basic ${auth}` }
+      headers: { Authorization: authHeader() }
    });
    const body = await response.json();
    return { response, body };
@@ -150,6 +164,27 @@ test('DELETE /api/uploads/:id unpublishes an approved upload and removes approve
    assert.equal(db.prepare('SELECT status FROM uploads WHERE id = ?').get(upload.body.uploadId).status, 'deleted');
 });
 
+test('clipboard PNG uploads use the same queue and approve path', async () => {
+   const upload = await uploadFixture('clipboard proof', 'clipboard');
+   assert.equal(upload.response.status, 201);
+
+   let row = db.prepare('SELECT id, filename, kind, status FROM uploads WHERE id = ?').get(upload.body.uploadId);
+   assert.equal(row.kind, 'clipboard');
+   assert.equal(row.status, 'pending');
+   assert.equal(path.extname(row.filename), '.png');
+
+   const approval = await approveUpload(upload.body.uploadId);
+   assert.equal(approval.response.status, 200);
+   assert.equal(approval.body.kind, 'clipboard');
+   assert.equal(approval.body.federation.reason, 'activitypub-disabled');
+
+   row = db.prepare('SELECT filename, kind, status FROM uploads WHERE id = ?').get(upload.body.uploadId);
+   assert.equal(row.kind, 'clipboard');
+   assert.equal(row.status, 'approved');
+   assert.equal(path.extname(row.filename), '.png');
+   assert.equal(fs.existsSync(path.join(STORAGE_APPROVED_DIR, row.filename)), true);
+});
+
 test('POST /api/uploads rejects a MIME-spoofed non-video after ffprobe and unlinks it', async () => {
    process.env.GSTMXX_MOCK_FFPROBE = 'invalid';
    const beforeFiles = fs.readdirSync(STORAGE_INCOMING_DIR).filter((entry) => entry !== '.gitkeep');
@@ -161,6 +196,83 @@ test('POST /api/uploads rejects a MIME-spoofed non-video after ffprobe and unlin
    assert.equal(upload.body.ok, false);
    assert.deepEqual(afterFiles, beforeFiles);
    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM uploads').get().count, 0);
+});
+
+test('admin page lists pending uploads, filters by kind, and previews private media', async () => {
+   const video = await uploadFixture('video pending', 'video');
+   const clipboard = await uploadFixture('clipboard pending', 'clipboard');
+
+   const page = await fetch(`${baseUrl}/api/admin/`, {
+      headers: { Authorization: authHeader() }
+   });
+   assert.equal(page.status, 200);
+   assert.match(await page.text(), /Ghostmaxxing moderation/);
+
+   const pending = await fetch(`${baseUrl}/api/admin/pending?kind=clipboard`, {
+      headers: { Authorization: authHeader() }
+   });
+   const pendingBody = await pending.json();
+   assert.equal(pending.status, 200);
+   assert.equal(pendingBody.pending.length, 1);
+   assert.equal(pendingBody.pending[0].id, clipboard.body.uploadId);
+   assert.equal(pendingBody.pending[0].kind, 'clipboard');
+   assert.match(pendingBody.pending[0].publicUrl, /\/clipboard\//);
+
+   const image = await fetch(`${baseUrl}/api/admin/media/${clipboard.body.uploadId}`, {
+      headers: { Authorization: authHeader() }
+   });
+   assert.equal(image.status, 200);
+   assert.match(image.headers.get('content-type'), /image\/png/);
+
+   const videoMedia = await fetch(`${baseUrl}/api/admin/media/${video.body.uploadId}`, {
+      headers: { Authorization: authHeader() }
+   });
+   assert.equal(videoMedia.status, 200);
+});
+
+test('admin news insert route feeds /feed/news.xml and ghostyles feed reads the manifest', async () => {
+   const created = await fetch(`${baseUrl}/api/admin/news`, {
+      method: 'POST',
+      headers: {
+         Authorization: authHeader(),
+         'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+         title: 'Launch note',
+         body: 'Ghostmaxxing backend feeds are alive.',
+         link: 'https://ghostmaxxing.vecna.eu/news/launch-note'
+      })
+   });
+   assert.equal(created.status, 201);
+
+   const news = await fetch(`${baseUrl}/feed/news.xml`);
+   const newsXml = await news.text();
+   assert.equal(news.status, 200);
+   assert.match(newsXml, /<language>en<\/language>/);
+   assert.match(newsXml, /Launch note/);
+   assert.match(newsXml, /Ghostmaxxing backend feeds are alive\./);
+
+   const ghostyles = await fetch(`${baseUrl}/feed/ghostyles.xml`);
+   const ghostylesXml = await ghostyles.text();
+   assert.equal(ghostyles.status, 200);
+   assert.match(ghostylesXml, /<language>en<\/language>/);
+   assert.match(ghostylesXml, /Ghostyle: brush/);
+   assert.match(ghostylesXml, /ghostyles\/brush\.js/);
+});
+
+test('/feed/videos.xml is English and excludes approved clipboard images', async () => {
+   const video = await uploadFixture('video feed item', 'video');
+   const clipboard = await uploadFixture('clipboard feed item', 'clipboard');
+   await approveUpload(video.body.uploadId);
+   await approveUpload(clipboard.body.uploadId);
+
+   const response = await fetch(`${baseUrl}/feed/videos.xml`);
+   const xml = await response.text();
+   assert.equal(response.status, 200);
+   assert.match(xml, /<language>en<\/language>/);
+   assert.match(xml, new RegExp(video.body.uploadId));
+   assert.doesNotMatch(xml, new RegExp(clipboard.body.uploadId));
+   assert.match(xml, /Workshop video/);
 });
 
 test('cleanupStaleUploads marks old pending uploads deleted and removes their files', () => {
@@ -207,4 +319,12 @@ test('ActivityPub actor keys are real, persisted RSA and Ed25519 pairs', async (
    assert.equal(rows.map((row) => String(row.algorithm)).join(','), 'RSASSA-PKCS1-v1_5,Ed25519');
    assert.match(rows[0].public_jwk, /"kty":"RSA"/);
    assert.match(rows[1].public_jwk, /"crv":"Ed25519"/);
+});
+
+test('ActivityPub actor handle set includes video, ghostyles, news, and clipboard', async () => {
+   assert.equal(ACTOR_HANDLES.join(','), 'video,ghostyles,news,clipboard');
+   for (const handle of ACTOR_HANDLES) {
+      const pairs = await ensureActorKeyPairs(handle);
+      assert.equal(pairs.length, 2);
+   }
 });

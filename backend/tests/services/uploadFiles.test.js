@@ -55,6 +55,14 @@ describe('uploadFiles service', () => {
       expect(paths[1]).toContain('thumb-test.png');
    });
 
+   test('uploadFilePaths should not derive thumbnails for approved clipboard uploads', () => {
+      const record = { filename: 'pub-clipboard.png', kind: 'clipboard', status: 'approved' };
+      const paths = uploadFilePaths(record);
+      expect(paths).toHaveLength(1);
+      expect(paths[0]).toContain('approved');
+      expect(paths[0]).toContain('pub-clipboard.png');
+   });
+
    test('removeUploadFiles should filter and remove files', () => {
       const record = { filename: 'test.mp4', status: 'pending' };
       fs.existsSync.mockReturnValue(true);

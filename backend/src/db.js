@@ -43,6 +43,7 @@ function createUploadsTable(tableName = 'uploads') {
     id TEXT PRIMARY KEY,
     filename TEXT NOT NULL,
     thumbnail_filename TEXT,
+    kind TEXT CHECK(kind IN ('video', 'clipboard')) DEFAULT 'video',
     status TEXT CHECK(status IN ('pending', 'approved', 'rejected', 'deleted')) DEFAULT 'pending',
     consent_version TEXT NOT NULL,
     ghostyle_id TEXT,
@@ -89,19 +90,25 @@ function migrateUploadsTable() {
   const columns = getColumns('uploads');
   const needsDeletedStatus = !sql.includes("'deleted'");
   const needsThumbnail = !columns.includes('thumbnail_filename');
-  if (!needsDeletedStatus && !needsThumbnail) return;
+  const needsKind = !columns.includes('kind');
+  if (!needsDeletedStatus && !needsThumbnail && !needsKind) return;
 
   const hasModeratedAt = columns.includes('moderated_at');
+  const hasKind = columns.includes('kind');
+  const hasThumbnail = columns.includes('thumbnail_filename');
   db.transaction(() => {
     db.prepare('ALTER TABLE uploads RENAME TO uploads_old').run();
     createUploadsTable();
     db.prepare(`
       INSERT INTO uploads (
-        id, filename, thumbnail_filename, status, consent_version, ghostyle_id,
+        id, filename, thumbnail_filename, kind, status, consent_version, ghostyle_id,
         app_version, user_note, metrics_json, delete_token, created_at, moderated_at
       )
       SELECT
-        id, filename, NULL, status, consent_version, ghostyle_id,
+        id, filename,
+        ${hasThumbnail ? 'thumbnail_filename' : 'NULL'},
+        ${hasKind ? 'kind' : "'video'"},
+        status, consent_version, ghostyle_id,
         app_version, user_note, metrics_json, delete_token, created_at,
         ${hasModeratedAt ? 'moderated_at' : 'NULL'}
       FROM uploads_old
@@ -147,6 +154,16 @@ db.prepare(`
     private_jwk TEXT NOT NULL,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (actor, algorithm)
+  )
+`).run();
+
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS news (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    link TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )
 `).run();
 

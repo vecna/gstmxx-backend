@@ -50,7 +50,11 @@ function uploadFilePaths(record) {
 
    if (record.status === 'approved') {
       paths.push(path.join(STORAGE_APPROVED_DIR, record.filename));
-      paths.push(path.join(STORAGE_THUMBNAILS_DIR, record.thumbnail_filename || deriveThumbnailName(record.filename)));
+      if (record.kind !== 'clipboard') {
+         paths.push(path.join(STORAGE_THUMBNAILS_DIR, record.thumbnail_filename || deriveThumbnailName(record.filename)));
+      } else if (record.thumbnail_filename) {
+         paths.push(path.join(STORAGE_THUMBNAILS_DIR, record.thumbnail_filename));
+      }
       return paths;
    }
 
