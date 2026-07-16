@@ -1,3 +1,21 @@
+/**
+ * UNIT/INTEGRATION TEST — src/db.js (SQLite schema + migrations).
+ *
+ * WHAT WE TEST (existing)
+ *   - The four tables (uploads, ap_followers, keys, news) are created.
+ *   - A basic insert into uploads applies the schema defaults
+ *     (status='pending', kind='video').
+ *
+ * WHAT WE ADDED (see migration block below)
+ *   - The idempotent forward-migration paths (migrateUploadsTable /
+ *     migrateFollowersTable) that upgrade an OLD schema in place. These were
+ *     the largest untested branch in db.js (coverage ~50%): a table missing
+ *     the 'deleted' status, the 'kind' column, or the 'clipboard' follower.
+ *
+ * NOTE
+ *   Runs on the real better-sqlite3 in-memory DB (NODE_ENV=test), so these are
+ *   genuine SQL executions, not mocks.
+ */
 process.env.NODE_ENV = 'test';
 const db = require('../src/db');
 

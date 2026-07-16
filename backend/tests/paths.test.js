@@ -1,3 +1,17 @@
+/**
+ * UNIT TEST — src/paths.js (path/config resolution).
+ *
+ * WHAT WE TEST
+ *   - In NODE_ENV=test with no overrides, DATA_DIR/STORAGE_DIR fall back to OS
+ *     tmp dirs and DB_PATH becomes ':memory:' (so CI never writes real files).
+ *   - The GSTMXX_* env overrides win when provided.
+ *
+ * WHY IT MATTERS
+ *   Every other module derives its filesystem + DB location from here; getting
+ *   this wrong means tests silently share state or clobber a real database.
+ *   jest.resetModules() in beforeEach forces paths.js to re-evaluate its
+ *   module-load-time constants against the freshly-set env each test.
+ */
 const os = require('os');
 const path = require('path');
 

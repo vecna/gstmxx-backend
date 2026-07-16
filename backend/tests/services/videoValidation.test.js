@@ -1,3 +1,17 @@
+/**
+ * UNIT TEST — src/services/videoValidation.js (B5 MIME sniffing).
+ *
+ * WHAT WE TEST
+ *   - validateUploadedVideo(): honours the GSTMXX_MOCK_FFPROBE test hook, and
+ *     with a real (mocked) ffprobe returns true only when a video stream exists.
+ *   - validateUploadedPng(): checks the 8-byte PNG magic signature on real files.
+ *
+ * WHY IT MATTERS
+ *   This is the defense that stops a renamed .txt (browser-declared video/mp4)
+ *   from being trusted — the fileFilter trusts the browser MIME, so this
+ *   post-upload probe is the real gate. The end-to-end reject+unlink is proven
+ *   in layer1.test.js ("rejects a MIME-spoofed non-video").
+ */
 const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
 const os = require('os');

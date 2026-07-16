@@ -1,3 +1,19 @@
+/**
+ * UNIT TEST — src/services/cleanup.js (B6 stale-upload cleanup).
+ *
+ * WHAT WE TEST
+ *   - staleDays() reads GSTMXX_STALE_DAYS and falls back to 14 on missing/invalid.
+ *   - cleanupStaleUploads() selects stale 'pending' rows, flips them to
+ *     'deleted', and removes their files (one removeUploadFiles call per row).
+ *   - startStaleUploadCleanup() installs an hourly interval that runs the sweep.
+ *
+ * HOW / CAVEAT
+ *   db and uploadFiles are fully MOCKED here, so this verifies the control flow
+ *   and counts — NOT the actual SQL date comparison. The real datetime()
+ *   cutoff logic (the thing most likely to be subtly wrong) is exercised
+ *   against real SQLite in layer1.test.js ("cleanupStaleUploads marks old...").
+ *   Fake timers let us advance an hour without waiting.
+ */
 const { cleanupStaleUploads, startStaleUploadCleanup, staleDays } = require('../../src/services/cleanup');
 const db = require('../../src/db');
 const { removeUploadFiles } = require('../../src/services/uploadFiles');

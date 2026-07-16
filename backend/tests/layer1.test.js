@@ -1,3 +1,40 @@
+/**
+ * ============================================================================
+ * LAYER 1 — INTEGRATION SUITE (the heart of the mock/CI test layer)
+ * ============================================================================
+ *
+ * WHAT THIS FILE IS
+ *   The full-stack, in-process integration test. It boots the REAL Express app
+ *   (createApp) on an ephemeral port and drives it with real HTTP (fetch),
+ *   against a real in-memory SQLite DB and a real temp storage dir. Only two
+ *   things are faked, both via env hooks set at the very top:
+ *     - GSTMXX_MOCK_FFPROBE      -> videoValidation short-circuits (no ffprobe binary needed)
+ *     - GSTMXX_MOCK_VIDEO_PROCESSING -> video.js copies instead of transcoding (no ffmpeg needed)
+ *   ActivityPub is DISABLED (GSTMXX_ENABLE_AP=0), which is the supported
+ *   production default until B7 lands — so federation emit calls return
+ *   { skipped, reason:'activitypub-disabled' } and are asserted as such.
+ *
+ * ORDERING NOTE
+ *   Env vars are set BEFORE requiring db/server/paths because those read
+ *   process.env at module-load time. resetDb()/resetStorage() run before each
+ *   test to keep cases independent.
+ *
+ * WHAT EACH TEST COVERS  (the "done when" lines from the backend milestone)
+ *   - delete-token happy/again/wrong-token .......... B3
+ *   - unpublish approved + remove media+thumbnail ... B3/B9 ordering
+ *   - clipboard shares the video queue/approve path .. B14
+ *   - MIME-spoof reject + unlink ..................... B5
+ *   - admin page + pending filter + private preview .. B11
+ *   - news insert -> /feed/news.xml, ghostyles feed .. B10
+ *   - videos.xml English + excludes clipboard ........ F10
+ *   - stale cleanup marks+removes (real SQL dates) ... B6
+ *   - real persisted RSA+Ed25519 keypairs ............ B4/F2
+ *   - four-actor handle set .......................... §8 delta
+ *
+ * WHAT THIS FILE DOES NOT COVER
+ *   The real ffmpeg/ffprobe binaries, TLS/nginx, and the ActivityPub HTTP
+ *   surface (WebFinger/actor/delivery). Those are Layer 2 (online) territory.
+ */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -129,6 +166,8 @@ test('DELETE /api/uploads/:id rejects a wrong token and deletes a pending upload
    assert.equal(fs.existsSync(incomingPath), false);
    assert.equal(db.prepare('SELECT status FROM uploads WHERE id = ?').get(upload.body.uploadId).status, 'deleted');
 
+   // Deleting an already-deleted upload is 410 Gone (idempotent, not a 404):
+   // the row still exists but is in a terminal 'deleted' state.
    const gone = await fetch(`${baseUrl}/api/uploads/${upload.body.uploadId}`, {
       method: 'DELETE',
       headers: { 'X-Delete-Token': upload.body.deleteToken }
@@ -158,6 +197,9 @@ test('DELETE /api/uploads/:id unpublishes an approved upload and removes approve
    });
    const body = await response.json();
    assert.equal(response.status, 200);
+   // With AP off, the delete still succeeds locally; the federation Delete is
+   // reported as skipped rather than attempted. This is the contract the
+   // frontend consent copy relies on ("origin-guaranteed deletion").
    assert.equal(body.federation.reason, 'activitypub-disabled');
    assert.equal(fs.existsSync(approvedPath), false);
    assert.equal(fs.existsSync(thumbnailPath), false);
@@ -186,6 +228,9 @@ test('clipboard PNG uploads use the same queue and approve path', async () => {
 });
 
 test('POST /api/uploads rejects a MIME-spoofed non-video after ffprobe and unlinks it', async () => {
+   // Simulate ffprobe finding no video stream (i.e. a renamed .txt that the
+   // browser labelled video/mp4 and so passed multer's fileFilter). B5 requires
+   // the file be probed AND unlinked, leaving no residue and no DB row.
    process.env.GSTMXX_MOCK_FFPROBE = 'invalid';
    const beforeFiles = fs.readdirSync(STORAGE_INCOMING_DIR).filter((entry) => entry !== '.gitkeep');
 

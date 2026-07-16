@@ -1,3 +1,19 @@
+/**
+ * UNIT TEST — src/services/video.js (ffmpeg approval pipeline).
+ *
+ * WHAT WE TEST
+ *   - Rejects when the source file is missing.
+ *   - In the mock boundary (NODE_ENV=test + GSTMXX_MOCK_VIDEO_PROCESSING=1) it
+ *     copies the file and returns { videoName: 'pub-<name>.mp4', thumbnailName: null }.
+ *
+ * WHAT WE DO NOT TEST (by design — and a real coverage gap to know about)
+ *   The actual fluent-ffmpeg transcode + screenshot chain (libx264, -map_metadata -1
+ *   privacy strip, poster frame) is NEVER run here because ffmpeg is mocked and
+ *   the code short-circuits in test mode. That real path (video.js lines ~38-71)
+ *   is only exercised in the Layer 2 online suite on a box that has ffmpeg.
+ *   The '-map_metadata -1' privacy guarantee in particular has NO automated
+ *   assertion anywhere — flagged in ASSESSMENT.md.
+ */
 const fs = require('fs');
 const path = require('path');
 const { processApprovedVideo } = require('../../src/services/video');

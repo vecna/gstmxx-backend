@@ -1,3 +1,26 @@
+/**
+ * UNIT TEST — src/services/activitypub.js (WIRING ONLY — read the caveat!).
+ *
+ * WHAT WE TEST
+ *   - initActivityPub() wires the Fedify federation: setActorDispatcher +
+ *     setKeyPairsDispatcher, setFollowersDispatcher, setInboxListeners, and two
+ *     .on() handlers (Follow, Undo).
+ *   - activityPubMiddleware() forwards to the federation object and calls next()
+ *     when the federation returns nothing.
+ *
+ * ⚠️  CRITICAL CAVEAT — WHY THIS SUITE IS A FALSE-GREEN FOR B7  ⚠️
+ *   getFedify is fully MOCKED below. The mock's federation object has a
+ *   `.handle()` method, so the middleware's `fed.handle(req)` call "works" here.
+ *   But the REAL @fedify/fedify 1.x object has NO `.handle()` — its HTTP
+ *   entrypoint is `.fetch(request)`. So this test passes while the real
+ *   integration is broken (every federation request 400s in production).
+ *
+ *   This suite therefore verifies only that the dispatchers are *registered*,
+ *   not that the HTTP bridge is correct. The correct-API assertion lives in
+ *   tests/ap_runtime.test.js (real library, pins `.fetch`), and the true
+ *   end-to-end proof (WebFinger + actor JSON resolve) lives in the Layer 2
+ *   online suite. Do NOT treat a green run here as "B7 done".
+ */
 const mockInboxSetters = {
    on: jest.fn()
 };

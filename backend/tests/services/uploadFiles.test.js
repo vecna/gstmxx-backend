@@ -1,3 +1,20 @@
+/**
+ * UNIT TEST — src/services/uploadFiles.js (path derivation + safe deletion).
+ *
+ * WHAT WE TEST
+ *   - removeIfExists(): unlinks only when the file exists; returns the boolean.
+ *   - deriveThumbnailName(): maps video filename -> thumb-<base>.png, stripping
+ *     an optional 'pub-' prefix (must match what video.js actually writes).
+ *   - uploadFilePaths(): returns incoming path for pending; approved + thumbnail
+ *     for approved video; approved-only for approved clipboard (no thumbnail).
+ *   - removeUploadFiles(): only returns the paths that actually existed.
+ *
+ * WHY THE CLIPBOARD BRANCH MATTERS
+ *   A clipboard upload has no thumbnail; deriving one would try to delete a
+ *   non-existent file. The dedicated clipboard case guards that.
+ *
+ * CAVEAT: fs is mocked; this is about path logic, not real disk effects.
+ */
 const fs = require('fs');
 const path = require('path');
 const {

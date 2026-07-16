@@ -1,3 +1,19 @@
+/**
+ * UNIT TEST — src/services/keys.js (B4 real, persisted actor keypairs).
+ *
+ * WHAT WE TEST
+ *   - ensureActorKeyPairs() rejects an unknown actor handle.
+ *   - It generates BOTH algorithms (RSASSA-PKCS1-v1_5 + Ed25519) when missing
+ *     (two INSERTs) and returns two keypairs.
+ *   - publicKeyToPem() emits a PEM-wrapped SPKI block.
+ *
+ * HOW / CAVEAT
+ *   db AND the Fedify crypto API are MOCKED, so this checks the bookkeeping
+ *   (how many inserts, valid-actor guard) — it does NOT prove the keys are
+ *   cryptographically real. That stronger claim (real RSA/Ed25519 JWKs that
+ *   survive a restart) is asserted against the REAL library in layer1.test.js
+ *   ("ActivityPub actor keys are real, persisted RSA and Ed25519 pairs").
+ */
 const { ensureActorKeyPairs, getActorKeyPairs, publicKeyToPem, ACTOR_HANDLES } = require('../../src/services/keys');
 const db = require('../../src/db');
 
