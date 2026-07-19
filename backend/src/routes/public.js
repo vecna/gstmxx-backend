@@ -3,6 +3,7 @@ const fs = require('fs');
 const router = express.Router();
 const db = require('../db');
 const { GHOSTYLES_JSON_PATH } = require('../paths');
+const { publicUrlForUpload } = require('../services/publicUrls');
 
 const BASE_URL = process.env.GSTMXX_BASE_URL || 'https://ghostmaxxing.vecna.eu';
 
@@ -60,10 +61,9 @@ function readGhostyles() {
 
 function uploadItem(row) {
    const isClipboard = row.kind === 'clipboard';
-   const section = isClipboard ? 'clipboard' : 'videos';
    return {
       title: isClipboard ? `Clipboard image ${row.id}` : `Workshop video ${row.id}`,
-      link: `${BASE_URL}/${section}/${row.id}`,
+      link: publicUrlForUpload(row),
       description: `${row.user_note || 'No note provided.'} Ghostyle: ${row.ghostyle_id || 'none'}.`,
       created_at: row.created_at
    };
@@ -72,7 +72,7 @@ function uploadItem(row) {
 router.get('/videos.xml', (req, res) => {
    try {
       const rows = db.prepare(`
-         SELECT id, kind, user_note, ghostyle_id, created_at
+         SELECT id, filename, kind, status, user_note, ghostyle_id, created_at
          FROM uploads
          WHERE status = 'approved' AND kind = 'video'
          ORDER BY created_at DESC LIMIT 50
@@ -134,7 +134,7 @@ router.get('/news.xml', (req, res) => {
 router.get('/all.xml', (req, res) => {
    try {
       const uploads = db.prepare(`
-         SELECT id, kind, user_note, ghostyle_id, created_at
+         SELECT id, filename, kind, status, user_note, ghostyle_id, created_at
          FROM uploads
          WHERE status = 'approved'
          ORDER BY created_at DESC LIMIT 25

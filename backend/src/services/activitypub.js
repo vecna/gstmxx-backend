@@ -1,5 +1,8 @@
 const db = require('../db');
+const { Readable } = require('node:stream');
 const { ACTOR_HANDLES, getActorKeyPairs } = require('./keys');
+const { SqliteKvStore } = require('./sqliteKvStore');
+const { publicPathForUpload } = require('./publicUrls');
 
 let federationInstance = null;
 const BASE_URL = process.env.GSTMXX_BASE_URL || 'https://ghostmaxxing.vecna.eu';
@@ -28,7 +31,6 @@ async function initActivityPub() {
       Endpoints,
       Follow,
       Image,
-      MemoryKvStore,
       Note,
       Person,
       PUBLIC_COLLECTION,
@@ -37,7 +39,7 @@ async function initActivityPub() {
    } = await getFedify();
 
    federationInstance = createFederation({
-      kv: new MemoryKvStore(),
+      kv: new SqliteKvStore(db),
    });
 
    federationInstance.setActorDispatcher('/federation/actors/{handle}', async (ctx, handle) => {
@@ -58,6 +60,8 @@ async function initActivityPub() {
    }).setKeyPairsDispatcher(async (_ctx, handle) => {
       if (!ACTOR_HANDLES.includes(handle)) return [];
       return getActorKeyPairs(handle);
+   }).mapHandle((_ctx, handle) => {
+      return ACTOR_HANDLES.includes(handle) ? handle : null;
    });
 
    federationInstance.setFollowersDispatcher('/federation/actors/{handle}/followers', (_ctx, handle) => {
@@ -128,7 +132,7 @@ function uploadActor(upload) {
 }
 
 function uploadPublicPath(upload) {
-   return upload.kind === 'clipboard' ? `/clipboard/${upload.id}` : `/videos/${upload.id}`;
+   return publicPathForUpload(upload);
 }
 
 async function emitCreateForUpload(upload) {
@@ -212,19 +216,58 @@ async function emitDeleteForUpload(upload) {
  * Middleware Express per convogliare le richieste HTTP in arrivo verso il motore di Fedify.
  */
 async function activityPubMiddleware(req, res, next) {
-   const fed = await initActivityPub();
-   fed.handle(req).then(response => {
-      if (response) {
-         response.headers.forEach((val, key) => res.setHeader(key, val));
-         res.status(response.status);
-         response.text().then(body => res.send(body));
-      } else {
-         next();
+   try {
+      const fed = await initActivityPub();
+      const request = expressRequestToFetchRequest(req);
+      const response = await fed.fetch(request, { contextData: undefined });
+
+      res.status(response.status);
+      response.headers.forEach((value, key) => {
+         res.setHeader(key, value);
+      });
+
+      if (!response.body) {
+         return res.end();
       }
-   }).catch(err => {
+
+      const stream = Readable.fromWeb(response.body);
+      stream.on('error', next);
+      return stream.pipe(res);
+   } catch (err) {
       console.error('[Fedify Request Handler Error]:', err);
-      next();
-   });
+      return next(err);
+   }
+}
+
+function requestBaseUrl(req) {
+   const forwardedProto = req.get && req.get('x-forwarded-proto');
+   const forwardedHost = req.get && req.get('x-forwarded-host');
+   const proto = forwardedProto || req.protocol || new URL(BASE_URL).protocol.replace(':', '');
+   const host = forwardedHost || (req.get && req.get('host')) || new URL(BASE_URL).host;
+   return `${proto}://${host}`;
+}
+
+function expressRequestToFetchRequest(req) {
+   const headers = new Headers();
+   for (const [key, value] of Object.entries(req.headers || {})) {
+      if (value == null) continue;
+      if (Array.isArray(value)) {
+         for (const item of value) headers.append(key, item);
+      } else {
+         headers.set(key, String(value));
+      }
+   }
+
+   const init = {
+      method: req.method,
+      headers
+   };
+   if (req.method !== 'GET' && req.method !== 'HEAD') {
+      init.body = req;
+      init.duplex = 'half';
+   }
+
+   return new Request(new URL(req.originalUrl || req.url, requestBaseUrl(req)), init);
 }
 
 module.exports = {

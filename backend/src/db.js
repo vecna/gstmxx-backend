@@ -167,4 +167,17 @@ db.prepare(`
   )
 `).run();
 
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS fedify_kv (
+    key TEXT PRIMARY KEY,
+    value BLOB NOT NULL,
+    expires_at TEXT
+  )
+`).run();
+
+db.prepare(`
+  CREATE INDEX IF NOT EXISTS idx_fedify_kv_expires_at
+  ON fedify_kv(expires_at)
+`).run();
+
 module.exports = db;

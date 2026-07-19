@@ -7,8 +7,7 @@ const db = require('../db');
 const { processApprovedClipboard, processApprovedVideo } = require('../services/video');
 const { emitCreateForUpload } = require('../services/activitypub');
 const { STORAGE_INCOMING_DIR } = require('../paths');
-
-const BASE_URL = process.env.GSTMXX_BASE_URL || 'https://ghostmaxxing.vecna.eu';
+const { publicUrlForUpload } = require('../services/publicUrls');
 
 // Configurazione credenziali di moderazione (sostituire o agganciare a process.env in produzione)
 const ADMIN_USER = process.env.GSTMXX_ADMIN_USER || 'admin';
@@ -17,14 +16,27 @@ const ADMIN_PASS = process.env.GSTMXX_ADMIN_PASS || 'cambiami-subito-2026';
 // Middleware di sicurezza: HTTP Basic Auth sincrono e leggero
 function basicAuthMiddleware(req, res, next) {
    const authHeader = req.headers.authorization;
-   if (!authHeader) {
+   if (!authHeader || !authHeader.startsWith('Basic ')) {
       res.setHeader('WWW-Authenticate', 'Basic realm="Ghostmaxxing Moderation UI"');
       return res.status(401).send('Autenticazione richiesta.');
    }
 
-   const auth = Buffer.from(authHeader.split(' ')[1], 'base64').toString().split(':');
-   const user = auth[0];
-   const pass = auth[1];
+   let decoded;
+   try {
+      decoded = Buffer.from(authHeader.slice('Basic '.length), 'base64').toString('utf8');
+   } catch (err) {
+      res.setHeader('WWW-Authenticate', 'Basic realm="Ghostmaxxing Moderation UI"');
+      return res.status(401).send('Credenziali non valide.');
+   }
+
+   const separator = decoded.indexOf(':');
+   if (separator < 0) {
+      res.setHeader('WWW-Authenticate', 'Basic realm="Ghostmaxxing Moderation UI"');
+      return res.status(401).send('Credenziali non valide.');
+   }
+
+   const user = decoded.slice(0, separator);
+   const pass = decoded.slice(separator + 1);
 
    if (user === ADMIN_USER && pass === ADMIN_PASS) {
       return next();
@@ -36,11 +48,6 @@ function basicAuthMiddleware(req, res, next) {
 
 // Applichiamo la protezione Basic Auth a tutte le rotte di questo modulo
 router.use(basicAuthMiddleware);
-
-function publicUrlForUpload(upload) {
-   const section = upload.kind === 'clipboard' ? 'clipboard' : 'videos';
-   return `${BASE_URL}/${section}/${upload.id}`;
-}
 
 router.get('/', (req, res) => {
    return res.sendFile(path.resolve(__dirname, '../admin/index.html'));
@@ -131,8 +138,8 @@ router.post('/approve/:id', async (req, res) => {
 
       // Esecuzione della pipeline ffmpeg asincrona
       const processed = record.kind === 'clipboard'
-         ? await processApprovedClipboard(record.filename)
-         : await processApprovedVideo(record.filename);
+         ? await processApprovedClipboard(record.filename, id)
+         : await processApprovedVideo(record.filename, id);
 
       // Aggiornamento dello stato sul DB transazionale
       db.prepare(`
@@ -158,7 +165,7 @@ router.post('/approve/:id', async (req, res) => {
          kind: record.kind,
          video: processed.videoName,
          thumbnail: processed.thumbnailName,
-         publicUrl: publicUrlForUpload(record),
+         publicUrl: publicUrlForUpload(published),
          federation
       });
 

@@ -43,6 +43,16 @@ function isolateMiddleware(label, middleware) {
 function createApp() {
    const app = express();
 
+   // 1. Infrastruttura ActivityPub. Disattivata di default finche B7 non riscrive Fedify correttamente.
+   if (AP_ENABLED) {
+      const { activityPubMiddleware } = require('./services/activitypub');
+      app.use('/.well-known', isolateMiddleware('ActivityPub', activityPubMiddleware));
+      app.use('/federation', isolateMiddleware('ActivityPub', activityPubMiddleware));
+      console.log('[Ghostmaxxing Backend] ActivityPub enabled via GSTMXX_ENABLE_AP.');
+   } else {
+      console.log('[Ghostmaxxing Backend] ActivityPub disabled. Set GSTMXX_ENABLE_AP=1 to enable it.');
+   }
+
    app.use(express.json());
    app.use(express.urlencoded({ extended: true }));
 
@@ -54,15 +64,6 @@ function createApp() {
       standardHeaders: true,
       legacyHeaders: false,
    });
-
-   // 1. Infrastruttura ActivityPub. Disattivata di default finche B7 non riscrive Fedify correttamente.
-   if (AP_ENABLED) {
-      const { activityPubMiddleware } = require('./services/activitypub');
-      app.use(isolateMiddleware('ActivityPub', activityPubMiddleware));
-      console.log('[Ghostmaxxing Backend] ActivityPub enabled via GSTMXX_ENABLE_AP.');
-   } else {
-      console.log('[Ghostmaxxing Backend] ActivityPub disabled. Set GSTMXX_ENABLE_AP=1 to enable it.');
-   }
 
    // 2. Rotte dei Feed RSS pubblici e a bassa frizione
    app.use('/feed', isolateMiddleware('feed', publicRouter));

@@ -5,21 +5,8 @@
  *   - initActivityPub() wires the Fedify federation: setActorDispatcher +
  *     setKeyPairsDispatcher, setFollowersDispatcher, setInboxListeners, and two
  *     .on() handlers (Follow, Undo).
- *   - activityPubMiddleware() forwards to the federation object and calls next()
- *     when the federation returns nothing.
- *
- * ⚠️  CRITICAL CAVEAT — WHY THIS SUITE IS A FALSE-GREEN FOR B7  ⚠️
- *   getFedify is fully MOCKED below. The mock's federation object has a
- *   `.handle()` method, so the middleware's `fed.handle(req)` call "works" here.
- *   But the REAL @fedify/fedify 1.x object has NO `.handle()` — its HTTP
- *   entrypoint is `.fetch(request)`. So this test passes while the real
- *   integration is broken (every federation request 400s in production).
- *
- *   This suite therefore verifies only that the dispatchers are *registered*,
- *   not that the HTTP bridge is correct. The correct-API assertion lives in
- *   tests/ap_runtime.test.js (real library, pins `.fetch`), and the true
- *   end-to-end proof (WebFinger + actor JSON resolve) lives in the Layer 2
- *   online suite. Do NOT treat a green run here as "B7 done".
+ *   - activityPubMiddleware() adapts Express requests to Fedify's real
+ *     federation.fetch(Request) bridge and writes the returned Response.
  */
 const mockInboxSetters = {
    on: jest.fn()
@@ -27,28 +14,31 @@ const mockInboxSetters = {
 mockInboxSetters.on.mockReturnValue(mockInboxSetters);
 
 const mockActorSetters = {
-   setKeyPairsDispatcher: jest.fn()
+   setKeyPairsDispatcher: jest.fn(),
+   mapHandle: jest.fn()
 };
+mockActorSetters.setKeyPairsDispatcher.mockReturnValue(mockActorSetters);
+mockActorSetters.mapHandle.mockReturnValue(mockActorSetters);
 
 const mockFederation = {
    setActorDispatcher: jest.fn().mockReturnValue(mockActorSetters),
    setFollowersDispatcher: jest.fn(),
    setInboxListeners: jest.fn().mockReturnValue(mockInboxSetters),
    createContext: jest.fn(),
-   handle: jest.fn().mockResolvedValue(null)
+   fetch: jest.fn().mockResolvedValue(new Response(null, { status: 204 }))
 };
 
 jest.mock('../../src/db', () => ({
    prepare: jest.fn().mockReturnValue({
+      get: jest.fn(),
       all: jest.fn().mockReturnValue([]),
       run: jest.fn()
    })
 }));
 
 jest.mock('../../src/services/fedifyWrapper', () => ({
-   getFedify: jest.fn().mockResolvedValue({
+      getFedify: jest.fn().mockResolvedValue({
       createFederation: jest.fn().mockReturnValue(mockFederation),
-      MemoryKvStore: jest.fn(),
       Accept: jest.fn(),
       Create: jest.fn(),
       Delete: jest.fn(),
@@ -69,7 +59,9 @@ describe('activitypub service', () => {
    beforeEach(() => {
       jest.clearAllMocks();
       mockInboxSetters.on.mockReturnValue(mockInboxSetters);
-      mockFederation.handle.mockResolvedValue(null);
+      mockActorSetters.setKeyPairsDispatcher.mockReturnValue(mockActorSetters);
+      mockActorSetters.mapHandle.mockReturnValue(mockActorSetters);
+      mockFederation.fetch.mockResolvedValue(new Response(null, { status: 204 }));
    });
 
    test('initActivityPub should build and return a federation instance', async () => {
@@ -77,20 +69,31 @@ describe('activitypub service', () => {
       expect(fed).toBe(mockFederation);
       expect(mockFederation.setActorDispatcher).toHaveBeenCalled();
       expect(mockActorSetters.setKeyPairsDispatcher).toHaveBeenCalled();
+      expect(mockActorSetters.mapHandle).toHaveBeenCalled();
       expect(mockFederation.setFollowersDispatcher).toHaveBeenCalled();
       expect(mockFederation.setInboxListeners).toHaveBeenCalled();
       expect(mockInboxSetters.on).toHaveBeenCalledTimes(2);
    });
 
    test('activityPubMiddleware should forward requests to Fedify', async () => {
-      const req = { url: '/federation/actors/video' };
-      const res = { setHeader: jest.fn(), status: jest.fn(), send: jest.fn() };
+      const req = {
+         method: 'GET',
+         url: '/federation/actors/video',
+         originalUrl: '/federation/actors/video',
+         headers: { accept: 'application/activity+json' },
+         protocol: 'http',
+         get: jest.fn((name) => name === 'host' ? '127.0.0.1:3000' : undefined)
+      };
+      const res = { setHeader: jest.fn(), status: jest.fn(), end: jest.fn() };
       const next = jest.fn();
 
-      mockFederation.handle.mockResolvedValueOnce(null);
+      mockFederation.fetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
 
       await activityPubMiddleware(req, res, next);
-      expect(mockFederation.handle).toHaveBeenCalledWith(req);
-      expect(next).toHaveBeenCalled();
+      expect(mockFederation.fetch).toHaveBeenCalled();
+      expect(mockFederation.fetch.mock.calls[0][0]).toBeInstanceOf(Request);
+      expect(res.status).toHaveBeenCalledWith(204);
+      expect(res.end).toHaveBeenCalled();
+      expect(next).not.toHaveBeenCalled();
    });
 });

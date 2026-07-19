@@ -6,6 +6,7 @@ const {
    STORAGE_APPROVED_DIR,
    STORAGE_THUMBNAILS_DIR
 } = require('../paths');
+const { outputNamesForApproval } = require('./publicUrls');
 
 /**
  * Video normalization pipeline executed before publication.
@@ -14,13 +15,14 @@ const {
  * @param {string} inputFilename - Name of the file in the storage/incoming/ directory.
  * @returns {Promise<{videoName: string, thumbnailName: string|null}>} Resolves with the names of the processed files.
  */
-function processApprovedVideo(inputFilename) {
+function processApprovedVideo(inputFilename, uploadId = null) {
    return new Promise((resolve, reject) => {
       const inputPath = path.join(STORAGE_INCOMING_DIR, inputFilename);
-      const outputName = `pub-${path.parse(inputFilename).name}.mp4`;
+      const names = outputNamesForApproval(inputFilename, uploadId, 'video');
+      const outputName = names.mediaName;
       const outputPath = path.join(STORAGE_APPROVED_DIR, outputName);
       const thumbnailDir = STORAGE_THUMBNAILS_DIR;
-      const thumbnailName = `thumb-${path.parse(inputFilename).name}.png`;
+      const thumbnailName = names.thumbnailName;
 
       if (!fs.existsSync(inputPath)) {
          return reject(new Error(`File sorgente non trovato: ${inputPath}`));
@@ -74,10 +76,10 @@ function processApprovedVideo(inputFilename) {
    });
 }
 
-function processApprovedClipboard(inputFilename) {
+function processApprovedClipboard(inputFilename, uploadId = null) {
    return new Promise((resolve, reject) => {
       const inputPath = path.join(STORAGE_INCOMING_DIR, inputFilename);
-      const outputName = `pub-${path.parse(inputFilename).name}.png`;
+      const outputName = outputNamesForApproval(inputFilename, uploadId, 'clipboard').mediaName;
       const outputPath = path.join(STORAGE_APPROVED_DIR, outputName);
 
       if (!fs.existsSync(inputPath)) {
