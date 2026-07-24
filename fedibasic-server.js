@@ -315,11 +315,6 @@ federation
   .on(Follow, async (ctx, activity) => {
     debugS("Follow listener: received Follow activity for recipient=%s", ctx.recipient);
     const handle = ctx.recipient;
-/*    const actorId = activity.actorId;
-    const inboxUrl = activity.inboxId || activity.actor?.inboxId;
-    if (!ACTORS.includes(handle) || !actorId || !inboxUrl) return;
-
-    saveFollower(handle, actorId.href, inboxUrl.href); */
 
     if(!ACTORS.includes(handle) || !activity.objectId) {
       debugV("Follow listener: invalid follow payload or unknown recipient");
@@ -333,7 +328,6 @@ federation
       debugV("Follow listener: Follow.object target mismatch target=%o activity=%o", target, activity);
       return;
     }
-
 
     const follower = await activity.getActor(ctx);
     debugI("Follow listener: resolved actor profile from incoming Follow");
