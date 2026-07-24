@@ -1,12 +1,11 @@
-import express from "express";
-import fs from "node:fs";
-import path from "node:path";
-import v8 from "node:v8";
-import { Readable } from "node:stream";
-import { fileURLToPath } from "node:url";
-import { isDeepStrictEqual } from "node:util";
-import { Temporal } from "@js-temporal/polyfill";
-import {
+const express = require("express");
+const fs = require("node:fs");
+const path = require("node:path");
+const v8 = require("node:v8");
+const { Readable } = require("node:stream");
+const { isDeepStrictEqual } = require("node:util");
+const { Temporal } = require("@js-temporal/polyfill");
+const {
   Accept,
   Create,
   Endpoints,
@@ -19,18 +18,17 @@ import {
   exportJwk,
   generateCryptoKeyPair,
   importJwk
-} from "@fedify/fedify";
+} = require("@fedify/fedify");
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = parsePositiveInt(process.env.PORT, 4040);
 const BASE_URL = normalizeBaseUrl(
   process.env.LAB_BASE_URL || `http://127.0.0.1:${PORT}`
 );
 const DATA_DIR = path.resolve(
-  process.env.LAB_DATA_DIR || path.join(__dirname, "data")
+  process.env.LAB_DATA_DIR || path.join(__dirname, "fedibasic-data")
 );
-const PUBLIC_DIR = path.join(__dirname, "public");
+const PUBLIC_DIR = path.join(__dirname, "fedibasic-public");
 const ACTORS = ["video", "ghostyles", "news", "clipboard"];
 const ALGORITHMS = ["RSASSA-PKCS1-v1_5", "Ed25519"];
 
@@ -323,7 +321,7 @@ function sendFetchResponse(response, res, next) {
   return stream.pipe(res);
 }
 
-export function createApp() {
+function createApp() {
   const app = express();
   app.set("trust proxy", true);
 
@@ -426,7 +424,7 @@ export function createApp() {
   return app;
 }
 
-export function startServer() {
+function startServer() {
   const server = createApp().listen(PORT, HOST, () => {
     console.log(`Browser: ${BASE_URL}/`);
     console.log(`Listening on ${HOST}:${PORT}`);
@@ -439,6 +437,11 @@ export function startServer() {
   return server;
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+module.exports = {
+  createApp,
+  startServer
+};
+
+if (require.main === module) {
   startServer();
 }

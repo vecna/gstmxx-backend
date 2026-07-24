@@ -1,12 +1,13 @@
-import assert from "node:assert/strict";
-import test, { after, before } from "node:test";
+const assert = require("node:assert/strict");
+const test = require("node:test");
+const { after, before } = test;
 
 process.env.PORT = "4049";
 process.env.HOST = "127.0.0.1";
 process.env.LAB_BASE_URL = "http://127.0.0.1:4049";
 process.env.LAB_DATA_DIR = "/tmp/ghostmaxxing-fedify-browser-lab-test";
 
-const { createApp } = await import("../server.js");
+const { createApp } = require("../fedibasic-server.js");
 let server;
 const baseUrl = process.env.LAB_BASE_URL;
 
