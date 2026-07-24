@@ -1,0 +1,11 @@
+{
+  "actor": "clipboard",
+  "content": "Original picture post",
+  "publish": false,
+  "attachment": {
+    "type": "Image",
+    "url": "https://ghostmaxxing.vecna.eu/clipboard/REPLACE_WITH_PUBLIC_IMAGE.jpg",
+    "mediaType": "image/jpeg",
+    "name": "Describe the picture for people who cannot see it"
+  }
+}

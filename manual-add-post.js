@@ -1,128 +1,171 @@
 #!/usr/bin/env node
 
-const fs = require("node:fs");
 const path = require("node:path");
+const {
+  createPost,
+  loadEnvFile,
+  localApiUrl
+} = require("./postClient.js");
 
-const DEFAULT_ENV_FILE = path.resolve(__dirname, "fedibasic.env.example");
+const DEFAULT_ENV_FILE = path.resolve(__dirname, "fedibasic.env");
+const VALUE_OPTIONS = new Set([
+  "--actor",
+  "--server",
+  "--env-file",
+  "--image-url",
+  "--image-type",
+  "--image-alt",
+  "--quote"
+]);
 
-function loadEnvFile(filePath) {
-  if (!filePath || !fs.existsSync(filePath)) return;
-  const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const equalsIndex = trimmed.indexOf("=");
-    if (equalsIndex < 0) continue;
-    const key = trimmed.slice(0, equalsIndex).trim();
-    if (!key || process.env[key] != null) continue;
-    let value = trimmed.slice(equalsIndex + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    process.env[key] = value;
+function argumentValue(argv, name) {
+  const index = argv.indexOf(name);
+  return index >= 0 ? argv[index + 1] : undefined;
+}
+
+function takeValue(argv, index) {
+  const value = argv[index + 1];
+  if (!value || value.startsWith("--")) {
+    throw new Error(`${argv[index]} requires a value.`);
   }
+  return value;
+}
+
+function unknownOption(argument) {
+  const suggestion =
+    argument === "--publih"
+      ? " Did you mean --publish?"
+      : argument === "--image"
+        ? " Did you mean --image-url?"
+        : "";
+  throw new Error(`Unknown option: ${argument}.${suggestion}`);
 }
 
 function parseArgs(argv) {
   const options = {
     actor: "video",
     publish: false,
-    serverUrl: process.env.LAB_API_URL,
-    envFile: process.env.FEDIBASIC_ENV_FILE || DEFAULT_ENV_FILE,
+    dryRun: false,
     contentParts: []
   };
+  let positionalOnly = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
-    if (argument === "--actor") {
-      options.actor = argv[index + 1] || "";
-      index += 1;
-    } else if (argument === "--server") {
-      options.serverUrl = argv[index + 1] || "";
-      index += 1;
-    } else if (argument === "--env-file") {
-      options.envFile = argv[index + 1] || "";
+    if (positionalOnly) {
+      options.contentParts.push(argument);
+    } else if (argument === "--") {
+      positionalOnly = true;
+    } else if (VALUE_OPTIONS.has(argument)) {
+      const value = takeValue(argv, index);
+      const key = {
+        "--actor": "actor",
+        "--server": "serverUrl",
+        "--env-file": "envFile",
+        "--image-url": "imageUrl",
+        "--image-type": "imageType",
+        "--image-alt": "imageAlt",
+        "--quote": "quoteUrl"
+      }[argument];
+      options[key] = value;
       index += 1;
     } else if (argument === "--publish") {
       options.publish = true;
+    } else if (argument === "--dry-run") {
+      options.dryRun = true;
     } else if (argument === "--help" || argument === "-h") {
       options.help = true;
+    } else if (argument.startsWith("--")) {
+      unknownOption(argument);
     } else {
       options.contentParts.push(argument);
     }
   }
-
   return options;
 }
 
 function usage() {
   console.log(`Usage:
-  npm run post -- [--actor video] [--publish] [--server URL] "post text"
+  node manual-add-post.js [options] -- "post text"
 
 Options:
-  --actor NAME    Local actor: video, ghostyles, news, or clipboard
-  --publish       Also send a Create activity to the actor's followers
-  --server URL    Local API URL (default: LAB_API_URL or LAB_BASE_URL)
-  --env-file PATH Load env defaults from a Fedibasic-style env file
+  --actor NAME       video, ghostyles, news, or clipboard
+  --publish          Deliver a Create to this actor's followers
+  --server URL       Control API (default: LAB_API_URL or http://127.0.0.1:PORT)
+  --env-file PATH    Load configuration (default: ./fedibasic.env)
+  --image-url URL    Attach a publicly fetchable picture
+  --image-type MIME  Picture MIME type (default: image/jpeg)
+  --image-alt TEXT   Picture description/alt text
+  --quote URL        Quote an ActivityPub object
+  --dry-run          Print the request without sending it
 
 Examples:
-  npm run post -- "Hello from the lab"
-  npm run post -- --actor news --publish $'First line\\nSecond line'
+  node manual-add-post.js --actor video --publish -- "hello from the CLI"
+  node manual-add-post.js --server 127.0.0.1:4040 --dry-run -- "test"
+  node manual-add-post.js --actor clipboard --image-url https://example/image.jpg \\
+    --image-alt "A test image" --publish -- "picture post"
 `);
 }
 
-async function main() {
-  const options = parseArgs(process.argv.slice(2));
-  if (options.help) {
-    usage();
-    process.exit(0);
+async function main(argv = process.argv.slice(2)) {
+  const requestedEnv =
+    argumentValue(argv, "--env-file") ||
+    process.env.FEDIBASIC_ENV_FILE ||
+    DEFAULT_ENV_FILE;
+  loadEnvFile(requestedEnv);
+
+  let options;
+  try {
+    options = parseArgs(argv);
+  } catch (error) {
+    console.error(error.message);
+    console.error("Run with --help to see valid options.");
+    process.exitCode = 2;
+    return;
   }
+  if (options.help) return usage();
 
-  loadEnvFile(options.envFile);
-
-  const serverUrl =
-    options.serverUrl ||
-    process.env.LAB_BASE_URL ||
-    `http://127.0.0.1:${process.env.PORT || "4040"}`;
-  const content = options.contentParts.join(" ");
-
+  const content = options.contentParts.join(" ").trim();
   if (!content) {
-    console.error("Missing post text. Run with --help for examples.");
-    process.exit(2);
+    console.error("Missing post text. Put -- before text that starts with a dash.");
+    process.exitCode = 2;
+    return;
   }
 
-  const headers = { "Content-Type": "application/json" };
-  if (process.env.LAB_POST_TOKEN) {
-    headers.Authorization = `Bearer ${process.env.LAB_POST_TOKEN}`;
+  const payload = {
+    content,
+    actor: options.actor,
+    publish: options.publish
+  };
+  if (options.imageUrl) {
+    payload.attachment = {
+      type: "Image",
+      url: options.imageUrl,
+      mediaType: options.imageType || "image/jpeg",
+      name: options.imageAlt || "Image attached from the manual CLI"
+    };
   }
+  if (options.quoteUrl) payload.quoteUrl = options.quoteUrl;
 
   try {
-    const response = await fetch(
-      new URL("/api/posts", `${serverUrl.replace(/\/+$/, "")}/`),
+    const result = await createPost(
+      options.serverUrl || localApiUrl(),
+      payload,
       {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          content,
-          actor: options.actor,
-          publish: options.publish
-        })
+        token: process.env.LAB_POST_TOKEN,
+        dryRun: options.dryRun
       }
     );
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(
-        `${response.status} ${response.statusText}: ${body.message || "request failed"}`
-      );
-    }
-    console.log(JSON.stringify(body, null, 2));
+    console.log(JSON.stringify(result, null, 2));
   } catch (error) {
-    console.error(`Could not add post: ${error.message}`);
-    process.exit(1);
+    console.error(`Could not add post:\n${error.message}`);
+    process.exitCode = 1;
   }
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = {
+  main,
+  parseArgs
+};

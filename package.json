@@ -6,9 +6,11 @@
   "scripts": {
     "start": "node backend/src/server.js",
     "dev": "node --watch backend/src/server.js",
-    "post": "node --env-file-if-exists=fedibasic.env.example add-post.js",
+    "post": "node manual-add-post.js",
+    "quote-picture": "node manual-quote-picture.js",
     "fedibasic:start": "node fedibasic-server.js",
     "fedibasic:dev": "node --watch fedibasic-server.js",
+    "fedibasic:debug": "DEBUG=fedibasic:flow,fedibasic:http,fedibasic:store,fedibasic:activitypub node --env-file-if-exists=fedibasic.env fedibasic-server.js",
     "fedibasic:test": "node --test fedibasic-test/smoke.test.js",
     "fedibasic:tunnel": "fedify tunnel ${PORT:-4040}",
     "fediverse:static": "node fediverse-static/server.js",
@@ -18,7 +20,7 @@
     "c2p": "code2prompt --exclude node_modules --exclude .git --exclude .vscode --exclude .idea --exclude .husky --exclude .github --exclude .gitignore --exclude package-lock.json -O c2p-`date -I`.txt"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.16.0"
   },
   "dependencies": {
     "@fedify/cli": "^2.3.3",

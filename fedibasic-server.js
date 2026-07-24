@@ -12,6 +12,7 @@ const {
   Create,
   Endpoints,
   Follow,
+  Image,
   Note,
   Person,
   PUBLIC_COLLECTION,
@@ -21,10 +22,14 @@ const {
   generateCryptoKeyPair,
   importJwk
 } = require("@fedify/fedify");
-const debugS = require("debug")("fedibasic:server");
-const debugV = require("debug")("fedibasic:validation");
-const debugI = require("debug")("fedibasic:internal");
-const debugN = require("debug")("fedibasic:notes");
+const { createRequestFlow, event } = require("./debugLog.js");
+
+// The former line-by-line logs are intentionally silent.  The request-scoped
+// fedibasic:flow logger below records state transitions instead.
+const debugS = () => {};
+const debugV = () => {};
+const debugI = () => {};
+const debugN = () => {};
 
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = parsePositiveInt(process.env.PORT, 4040);
@@ -313,29 +318,53 @@ federation
     "/federation/inbox"
   )
   .on(Follow, async (ctx, activity) => {
-    debugS("Follow listener: received Follow activity for recipient=%s", ctx.recipient);
     const handle = ctx.recipient;
+    event("activitypub", "follow.received", {
+      recipient: handle,
+      activity: activity.id,
+      actor: activity.actorId
+    });
 
     if(!ACTORS.includes(handle) || !activity.objectId) {
-      debugV("Follow listener: invalid follow payload or unknown recipient");
+      event("activitypub", "follow.rejected", {
+        recipient: handle,
+        reason: "unknown recipient or missing object"
+      });
       return;
     }
 
     const target = ctx.parseUri(activity.objectId);
-    debugV("Follow listener: validating Follow.object target against local recipient");
 
     if(target?.type !== "actor" || target.identifier !== handle) {
-      debugV("Follow listener: Follow.object target mismatch target=%o activity=%o", target, activity);
+      event("activitypub", "follow.rejected", {
+        recipient: handle,
+        reason: "Follow.object does not match recipient",
+        object: activity.objectId
+      });
       return;
     }
 
     const follower = await activity.getActor(ctx);
-    debugI("Follow listener: resolved actor profile from incoming Follow");
-    if (!follower?.id || !follower.inboxId) return;
+    if (!follower?.id || !follower.inboxId) {
+      event("activitypub", "follow.rejected", {
+        recipient: handle,
+        reason: "actor could not be resolved to an inbox"
+      });
+      return;
+    }
     const actorId = follower.id;
     const inboxUrl = follower.endpoints?.sharedInbox || follower.inboxId;
-    debugN("Follow listener: selected inbox endpoint and saving follower state");
+    event("activitypub", "follow.resolved", {
+      recipient: handle,
+      actor: actorId,
+      deliveryInbox: inboxUrl,
+      usedSharedInbox: Boolean(follower.endpoints?.sharedInbox)
+    });
     saveFollower(handle, actorId.href, inboxUrl.href);
+    event("activitypub", "follow.stored", {
+      recipient: handle,
+      actor: actorId
+    });
 
     const accept = new Accept({
       id: new URL(
@@ -351,13 +380,19 @@ federation
       accept,
       { immediate: true, preferSharedInbox: true }
     );
-    debugS("Follow listener: sent Accept response for follower actor=%s", actorId.href);
+    event("activitypub", "follow.accepted", {
+      recipient: handle,
+      actor: actorId,
+      deliveredTo: inboxUrl
+    });
   })
   .on(Undo, async (ctx, activity) => {
-    debugS("Undo listener: received Undo activity for recipient=%s", ctx.recipient);
     if (ACTORS.includes(ctx.recipient) && activity.actorId) {
-      debugN("Undo listener: deleting follower state for actor=%s", activity.actorId.href);
       deleteFollower(ctx.recipient, activity.actorId.href);
+      event("activitypub", "follow.removed", {
+        recipient: ctx.recipient,
+        actor: activity.actorId
+      });
     }
   });
 
@@ -415,67 +450,193 @@ function tokenMatches(expected, provided) {
 }
 
 function requirePostToken(req, res, next) {
-  debugI("requirePostToken: evaluating whether write operation requires authorization");
-  if (!POST_TOKEN) return next();
+  if (!POST_TOKEN) {
+    req.flow?.next("AUTH_SKIPPED", { reason: "LAB_POST_TOKEN is empty" });
+    return next();
+  }
   const authorization = req.get("authorization") || "";
   const provided = authorization.startsWith("Bearer ")
     ? authorization.slice("Bearer ".length)
     : "";
-  debugV("requirePostToken: validating bearer token format and value");
   if (!tokenMatches(POST_TOKEN, provided)) {
-    debugS("requirePostToken: rejected write request due to missing or invalid token");
+    req.flow?.next("AUTH_REJECTED", {
+      bearerPresent: Boolean(provided)
+    });
     return res.status(401).json({
       ok: false,
       message: "A valid LAB_POST_TOKEN bearer token is required."
     });
   }
+  req.flow?.next("AUTH_ACCEPTED", { bearerPresent: true });
   return next();
 }
 
 function publicPost(post) {
-  debugN("publicPost: enriching stored post with public ActivityPub URL");
   const url = new URL(`/posts/${post.id}`, BASE_URL).href;
   return { ...post, url };
 }
 
-function activityPubPost(post) {
-  debugN("activityPubPost: transforming stored post into ActivityStreams Note object");
-  const actorUrl = new URL(`/federation/actors/${post.actor}`, BASE_URL).href;
+function escapeHtml(value) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function renderContent(post) {
+  const body = `<p>${escapeHtml(post.content).replaceAll("\n", "<br>")}</p>`;
+  if (!post.quoteUrl) return body;
+  const quoteUrl = escapeHtml(post.quoteUrl);
+  return `${body}<p class="quote-inline">RE: <a href="${quoteUrl}">${quoteUrl}</a></p>`;
+}
+
+function normalizeHttpUrl(value, fieldName) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw Object.assign(new Error(`${fieldName} must be an absolute URL.`), {
+      status: 400
+    });
+  }
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw Object.assign(
+      new Error(`${fieldName} must use http or https.`),
+      { status: 400 }
+    );
+  }
+  return url;
+}
+
+function normalizeAttachment(value) {
+  if (value == null) return null;
+  if (
+    typeof value !== "object" ||
+    value.type !== "Image" ||
+    typeof value.name !== "string" ||
+    !value.name.trim() ||
+    typeof value.mediaType !== "string" ||
+    !value.mediaType.startsWith("image/")
+  ) {
+    throw Object.assign(
+      new Error(
+        "attachment must be { type: \"Image\", url, mediaType: \"image/...\", name: \"alt text\" }."
+      ),
+      { status: 400 }
+    );
+  }
   return {
-    "@context": "https://www.w3.org/ns/activitystreams",
-    id: new URL(`/posts/${post.id}`, BASE_URL).href,
-    type: "Note",
-    attributedTo: actorUrl,
-    content: post.content,
-    mediaType: "text/plain",
-    published: post.createdAt,
-    to: "https://www.w3.org/ns/activitystreams#Public"
+    type: "Image",
+    url: normalizeHttpUrl(value.url, "attachment.url").href,
+    mediaType: value.mediaType,
+    name: value.name.trim()
   };
 }
 
+function localQuotedPost(quoteUrl, traceId) {
+  const url = new URL(quoteUrl);
+  if (url.origin !== new URL(BASE_URL).origin) return null;
+  const match = /^\/posts\/([0-9a-f-]{36})$/i.exec(url.pathname);
+  if (!match) {
+    throw Object.assign(
+      new Error("A local quoteUrl must point to /posts/{uuid}."),
+      { status: 400 }
+    );
+  }
+  const post = postStore.read(POST_DIR, match[1], traceId);
+  if (!post) {
+    throw Object.assign(new Error("The local quoted post does not exist."), {
+      status: 400
+    });
+  }
+  return post;
+}
 
-async function announcePost(post) {
-  debugS("announcePost: sending Create activity for post id=%s actor=%s", post.id, post.actor);
+async function activityPubPost(post, traceId) {
+  const objectUrl = new URL(`/posts/${post.id}`, BASE_URL);
+  const actorUrl = new URL(`/federation/actors/${post.actor}`, BASE_URL);
+  const followersUrl = new URL(
+    `/federation/actors/${post.actor}/followers`,
+    BASE_URL
+  );
+  const attachments = post.attachment
+    ? [
+        new Image({
+          url: new URL(post.attachment.url),
+          mediaType: post.attachment.mediaType,
+          name: post.attachment.name
+        })
+      ]
+    : [];
+  const note = new Note({
+    id: objectUrl,
+    url: objectUrl,
+    content: renderContent(post),
+    mediaType: "text/html",
+    published: Temporal.Instant.from(post.createdAt),
+    attribution: actorUrl,
+    attachments,
+    tos: [PUBLIC_COLLECTION],
+    ccs: [followersUrl],
+    quoteUrl: post.quoteUrl ? new URL(post.quoteUrl) : null
+  });
+  const json = await note.toJsonLd();
+
+  if (post.quoteUrl) {
+    if (!Array.isArray(json["@context"])) {
+      json["@context"] = [json["@context"]].filter(Boolean);
+    }
+    json["@context"].push({
+      quote: {
+        "@id": "https://w3id.org/fep/044f#quote",
+        "@type": "@id"
+      },
+      quoteAuthorization: {
+        "@id": "https://w3id.org/fep/044f#quoteAuthorization",
+        "@type": "@id"
+      }
+    });
+    json.quote = post.quoteUrl;
+    if (post.quoteAuthorizationUrl) {
+      json.quoteAuthorization = post.quoteAuthorizationUrl;
+    }
+  }
+
+  event("activitypub", "note.transformed", {
+    trace: traceId,
+    postId: post.id,
+    actor: post.actor,
+    attachment: attachments.length,
+    quote: Boolean(post.quoteUrl),
+    authorizedQuote: Boolean(post.quoteAuthorizationUrl)
+  });
+  return json;
+}
+
+async function announcePost(post, traceId) {
   const ctx = federation.createContext(new URL(BASE_URL), undefined);
   const actor = ctx.getActorUri(post.actor);
-  const objectUrl = new URL(`/posts/${post.id}`, BASE_URL);
-  debugN("announcePost: transforming post into Note object and wrapping Create activity");
-  const object = new Note({
-    id: objectUrl,
-    content: post.content,
-    mediaType: "text/plain",
-    published: Temporal.Instant.from(post.createdAt),
-    attribution: actor,
-    tos: [PUBLIC_COLLECTION]
-  });
-  const activity = new Create({
-    id: new URL(
-      `/federation/activities/create-${post.id}-${Date.now()}`,
-      BASE_URL
-    ),
-    actor,
+  const object = await activityPubPost(post, traceId);
+  const activityId = new URL(
+    `/federation/activities/create-${post.id}-${Date.now()}`,
+    BASE_URL
+  );
+  const activity = await Create.fromJsonLd({
+    "@context": object["@context"],
+    id: activityId.href,
+    type: "Create",
+    actor: actor.href,
     object,
-    tos: [PUBLIC_COLLECTION]
+    to: object.to,
+    cc: object.cc
+  });
+  const followers = followerRows(post.actor).length;
+  event("activitypub", "delivery.start", {
+    trace: traceId,
+    activity: activityId,
+    actor: post.actor,
+    followers
   });
   await ctx.sendActivity(
     { identifier: post.actor },
@@ -483,8 +644,12 @@ async function announcePost(post) {
     activity,
     { immediate: true, preferSharedInbox: true }
   );
-  debugS("announcePost: Create activity delivered to follower collection for actor=%s", post.actor);
-  return { followers: followerRows(post.actor).length };
+  event("activitypub", "delivery.done", {
+    trace: traceId,
+    activity: activityId,
+    followers
+  });
+  return { followers };
 }
 
 
@@ -493,16 +658,40 @@ function createApp() {
   const app = express();
   app.set("trust proxy", true);
 
+  app.use((req, res, next) => {
+    const startedAt = process.hrtime.bigint();
+    req.flow = createRequestFlow(req);
+    res.setHeader("x-request-id", req.flow.id);
+    req.flow.next("HTTP_RECEIVED", {
+      method: req.method,
+      path: req.originalUrl || req.url
+    });
+    res.on("finish", () => {
+      const durationMs =
+        Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+      req.flow.next("HTTP_RESPONDED", {
+        status: res.statusCode,
+        durationMs: durationMs.toFixed(1)
+      });
+    });
+    next();
+  });
+
   const fedifyBridge = async (req, res, next) => {
-    debugS("fedifyBridge: routing request through Fedify path=%s", req.originalUrl || req.url);
+    req.flow.next("FEDIFY_DISPATCH", {
+      publicUrl: publicRequestUrl(req)
+    });
     try {
       const response = await federation.fetch(toFetchRequest(req), {
         contextData: undefined
       });
-      debugI("fedifyBridge: received Fedify response status=%d", response.status);
+      req.flow.next("FEDIFY_RESULT", {
+        status: response.status,
+        contentType: response.headers.get("content-type")
+      });
       return sendFetchResponse(response, res, next);
     } catch (error) {
-      debugS("fedifyBridge: Fedify interaction failed with error=%s", error.message);
+      req.flow.next("FEDIFY_ERROR", { error });
       return next(error);
     }
   };
@@ -539,15 +728,18 @@ function createApp() {
     res.json({ ok: true, followers: stores.readFollowers() });
   });
 
-  app.get("/api/posts", (_req, res) => {
+  app.get("/api/posts", (req, res) => {
     debugS("GET /api/posts: listing stored posts for client");
-    res.json({ ok: true, posts: postStore.list(POST_DIR).map(publicPost) });
+    res.json({
+      ok: true,
+      posts: postStore.list(POST_DIR, req.flow.id).map(publicPost)
+    });
   });
 
   app.get("/api/posts/:id", (req, res) => {
     debugS("GET /api/posts/:id: fetching single post id=%s", req.params.id);
     debugV("GET /api/posts/:id: validating post id format through postStore");
-    const post = postStore.read(POST_DIR, req.params.id);
+    const post = postStore.read(POST_DIR, req.params.id, req.flow.id);
     if (!post) {
       debugI("GET /api/posts/:id: post not found id=%s", req.params.id);
       return res.status(404).json({ ok: false, message: "Post not found." });
@@ -556,10 +748,21 @@ function createApp() {
   });
 
   app.post("/api/posts", requirePostToken, async (req, res, next) => {
-    debugS("POST /api/posts: creating new post via API");
     try {
-      const { content, actor = "video", publish = false } = req.body || {};
-      debugV("POST /api/posts: validating content and actor fields");
+      const {
+        content,
+        actor = "video",
+        publish = false,
+        attachment: attachmentInput,
+        quoteUrl: quoteInput
+      } = req.body || {};
+      req.flow.next("POST_INPUT", {
+        actor,
+        publish: Boolean(publish),
+        contentChars: typeof content === "string" ? content.length : null,
+        attachment: Boolean(attachmentInput),
+        quote: Boolean(quoteInput)
+      });
       if (typeof content !== "string" || content.length === 0) {
         return res.status(400).json({
           ok: false,
@@ -572,10 +775,45 @@ function createApp() {
           message: `actor must be one of: ${ACTORS.join(", ")}.`
         });
       }
-      debugN("POST /api/posts: persisting validated post payload");
-      const post = postStore.create(POST_DIR, content, actor);
-      const delivery = publish ? await announcePost(post) : null;
-      debugI("POST /api/posts: create completed id=%s publish=%s", post.id, publish);
+
+      const attachment = normalizeAttachment(attachmentInput);
+      const quoteUrl = quoteInput
+        ? normalizeHttpUrl(quoteInput, "quoteUrl").href
+        : null;
+      const originalPost = quoteUrl
+        ? localQuotedPost(quoteUrl, req.flow.id)
+        : null;
+      const postId = crypto.randomUUID();
+      const quoteAuthorizationUrl =
+        originalPost && originalPost.actor !== actor
+          ? new URL(`/quote-authorizations/${postId}`, BASE_URL).href
+          : null;
+      req.flow.next("POST_VALIDATED", {
+        actor,
+        postId,
+        attachment: Boolean(attachment),
+        quote: quoteUrl || null,
+        quoteApproval: quoteAuthorizationUrl ? "local-preapproved" : "none"
+      });
+
+      const post = postStore.create(POST_DIR, content, actor, {
+        id: postId,
+        attachment,
+        quoteUrl,
+        quoteAuthorizationUrl,
+        traceId: req.flow.id
+      });
+      req.flow.next("POST_STORED", {
+        postId: post.id,
+        file: path.join(POST_DIR, `${post.id}.json`)
+      });
+      const delivery = publish
+        ? await announcePost(post, req.flow.id)
+        : null;
+      req.flow.next(publish ? "POST_PUBLISHED" : "POST_NOT_PUBLISHED", {
+        postId: post.id,
+        followers: delivery?.followers || 0
+      });
       return res.status(201).json({
         ok: true,
         post: publicPost(post),
@@ -590,12 +828,20 @@ function createApp() {
   app.post("/api/posts/:id/announce", requirePostToken, async (req, res, next) => {
     debugS("POST /api/posts/:id/announce: announcing existing post id=%s", req.params.id);
     try {
-      const post = postStore.read(POST_DIR, req.params.id);
+      const post = postStore.read(POST_DIR, req.params.id, req.flow.id);
       if (!post) {
         debugI("POST /api/posts/:id/announce: post not found id=%s", req.params.id);
         return res.status(404).json({ ok: false, message: "Post not found." });
       }
-      const delivery = await announcePost(post);
+      req.flow.next("POST_LOADED_FOR_DELIVERY", {
+        postId: post.id,
+        actor: post.actor
+      });
+      const delivery = await announcePost(post, req.flow.id);
+      req.flow.next("POST_PUBLISHED", {
+        postId: post.id,
+        followers: delivery.followers
+      });
       return res.json({
         ok: true,
         post: publicPost(post),
@@ -607,15 +853,80 @@ function createApp() {
     }
   });
 
-  app.get("/posts/:id", (req, res) => {
+  app.get("/posts/:id", async (req, res, next) => {
     debugS("GET /posts/:id: serving ActivityPub object id=%s", req.params.id);
-    const post = postStore.read(POST_DIR, req.params.id);
+    const post = postStore.read(POST_DIR, req.params.id, req.flow.id);
     if (!post) {
       debugI("GET /posts/:id: post not found id=%s", req.params.id);
       return res.status(404).json({ ok: false, message: "Post not found." });
     }
-    debugN("GET /posts/:id: transformed stored post into activity+json note");
-    return res.type("application/activity+json").json(activityPubPost(post));
+    try {
+      const object = await activityPubPost(post, req.flow.id);
+      req.flow.next("ACTIVITYPUB_OBJECT_SERVED", {
+        postId: post.id,
+        type: object.type
+      });
+      return res.type("application/activity+json").json(object);
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.get("/quote-authorizations/:postId", async (req, res, next) => {
+    try {
+      const quotePost = postStore.read(
+        POST_DIR,
+        req.params.postId,
+        req.flow.id
+      );
+      if (!quotePost?.quoteAuthorizationUrl || !quotePost.quoteUrl) {
+        return res.status(404).json({
+          ok: false,
+          message: "Quote authorization not found."
+        });
+      }
+      const originalPost = localQuotedPost(quotePost.quoteUrl, req.flow.id);
+      if (!originalPost || originalPost.actor === quotePost.actor) {
+        return res.status(404).json({
+          ok: false,
+          message: "Quote authorization not found."
+        });
+      }
+      const authorization = {
+        "@context": [
+          "https://www.w3.org/ns/activitystreams",
+          {
+            QuoteAuthorization:
+              "https://w3id.org/fep/044f#QuoteAuthorization",
+            gts: "https://gotosocial.org/ns#",
+            interactingObject: {
+              "@id": "gts:interactingObject",
+              "@type": "@id"
+            },
+            interactionTarget: {
+              "@id": "gts:interactionTarget",
+              "@type": "@id"
+            }
+          }
+        ],
+        id: quotePost.quoteAuthorizationUrl,
+        type: "QuoteAuthorization",
+        attributedTo: new URL(
+          `/federation/actors/${originalPost.actor}`,
+          BASE_URL
+        ).href,
+        interactingObject: new URL(`/posts/${quotePost.id}`, BASE_URL).href,
+        interactionTarget: quotePost.quoteUrl
+      };
+      req.flow.next("QUOTE_AUTHORIZATION_SERVED", {
+        quotePost: quotePost.id,
+        originalPost: originalPost.id,
+        approvingActor: originalPost.actor
+      });
+      return res.type("application/activity+json").json(authorization);
+    } catch (error) {
+      return next(error);
+    }
   });
 
 
@@ -676,8 +987,12 @@ function createApp() {
     res.status(404).json({ ok: false, message: "Not found." });
   });
 
-  app.use((error, _req, res, _next) => {
+  app.use((error, req, res, _next) => {
     debugS("error handler: caught error status=%o message=%s", error.status || error.statusCode, error.message);
+    req.flow?.next("REQUEST_ERROR", {
+      status: error.status || error.statusCode || 500,
+      error
+    });
     console.error("[fedify-browser-lab]", error);
     if (res.headersSent) return;
     res.status(error.status || error.statusCode || 500).json({
@@ -693,6 +1008,12 @@ function startServer() {
   debugS("startServer: starting HTTP server host=%s port=%d", HOST, PORT);
   const server = createApp().listen(PORT, HOST, () => {
     debugI("startServer: Express listen callback fired and server is ready");
+    event("http", "server.ready", {
+      host: HOST,
+      port: PORT,
+      baseUrl: BASE_URL,
+      dataDir: DATA_DIR
+    });
     console.log(`Browser: ${BASE_URL}/`);
     console.log(`Listening on ${HOST}:${PORT}`);
     if (HOST === "0.0.0.0") {
