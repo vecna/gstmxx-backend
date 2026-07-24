@@ -13,6 +13,10 @@ browser/server/Fedify path works before adding those components.
 ## 1. & 2. Run on the Linux machine
 
 
+```
+LAB_BASE_URL=https://ghostmaxxing.vecna.eu DEBUG=* PORT=3000 npm start
+```
+
 
 ```
 curl -sS   -H 'Accept: application/jrd+json'   'https://ghostmaxxing.vecna.eu/.well-known/webfinger?resource=acct%3Avideo%40ghostmaxxing.vecna.eu'   | jq
