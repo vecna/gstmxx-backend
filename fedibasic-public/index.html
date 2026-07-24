@@ -1,142 +1,60 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Fedify browser lab</title>
-  <style>
-    :root {
-      color-scheme: dark;
-      font: 16px/1.5 system-ui, sans-serif;
-      background: #111318;
-      color: #eef1f6;
-    }
-    body { max-width: 980px; margin: 0 auto; padding: 28px 18px 60px; }
-    h1 { margin-bottom: 4px; }
-    h2 { margin-top: 0; font-size: 1.05rem; }
-    .muted { color: #adb5c4; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
-    section { background: #1a1e26; border: 1px solid #343a46; border-radius: 10px; padding: 16px; }
-    button, select {
-      border: 1px solid #596273; border-radius: 6px; background: #272d38;
-      color: inherit; padding: 9px 12px; font: inherit;
-    }
-    button { cursor: pointer; }
-    button:hover { background: #343c4a; }
-    .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-    pre {
-      min-height: 90px; overflow: auto; white-space: pre-wrap; word-break: break-word;
-      background: #0d0f13; border-radius: 7px; padding: 12px; color: #cde3ff;
-    }
-    #origin.ok { color: #92e6a7; }
-    #origin.bad { color: #ffbd7a; }
-  </style>
-</head>
-<body>
-  <h1>Fedify browser lab</h1>
-  <p class="muted">Browser → Express → Fedify, using one HTTP origin.</p>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Fedify browser lab</title>
+    <link rel="stylesheet" href="/static/index.css">
+  </head>
+  <body>
+    <h1>Fedify browser lab</h1>
+    <p class="muted">Browser → Express → Fedify, using one HTTP origin.</p>
 
-  <section>
-    <h2>Connection</h2>
-    <p id="origin">Checking…</p>
-    <div class="row">
-      <button data-action="health">Health</button>
-      <button data-action="config">Configuration</button>
-      <button data-action="followers">Followers</button>
-    </div>
-  </section>
-
-  <div class="grid" style="margin-top: 14px">
     <section>
-      <h2>ActivityPub discovery</h2>
+      <h2>Connection</h2>
+      <p id="origin">Checking…</p>
       <div class="row">
-        <select id="actor"></select>
-        <button data-action="webfinger">WebFinger</button>
-        <button data-action="actor">Actor JSON</button>
+        <button data-action="health">Health</button>
+        <button data-action="config">Configuration</button>
+        <button data-action="followers">Followers</button>
       </div>
     </section>
 
-    <section>
-      <h2>Outgoing activity</h2>
-      <p class="muted">Construct and send a Create to the selected actor’s followers.</p>
-      <button data-action="announce">Announce static object</button>
+    <div class="grid">
+      <section>
+        <h2>ActivityPub discovery</h2>
+        <div class="row">
+          <select id="actor"></select>
+          <button data-action="webfinger">WebFinger</button>
+          <button data-action="actor">Actor JSON</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>Outgoing activity</h2>
+        <p class="muted">Construct and send a Create to the selected actor’s
+          followers.</p>
+        <button data-action="announce">Announce static object</button>
+      </section>
+    </div>
+
+    <section style="margin-top: 14px">
+      <h2>Persisted posts</h2>
+      <textarea id="post-content"
+        placeholder="Any text, including Unicode and line breaks"></textarea>
+      <div class="row" style="margin-top: 8px">
+        <input id="post-token" type="password"
+          placeholder="LAB_POST_TOKEN, if configured">
+        <label><input id="post-publish" type="checkbox"> Publish to followers
+          now</label>
+        <button data-action="create-post">Create post</button>
+        <button data-action="posts">List posts</button>
+      </div>
     </section>
-  </div>
 
-  <h2 style="margin-top: 22px">Response</h2>
-  <pre id="output">Ready.</pre>
+    <h2 class="response-title">Response</h2>
+    <pre id="output">Ready.</pre>
 
-  <script>
-    const output = document.querySelector("#output");
-    const origin = document.querySelector("#origin");
-    const actor = document.querySelector("#actor");
-    let config;
-
-    async function jsonRequest(url, options) {
-      const response = await fetch(url, options);
-      const text = await response.text();
-      let body;
-      try { body = JSON.parse(text); } catch { body = text; }
-      if (!response.ok) throw new Error(`${response.status} ${response.statusText}\n${text}`);
-      return body;
-    }
-
-    async function loadConfig(show = false) {
-      config = await jsonRequest("/api/config");
-      actor.replaceChildren(...config.actors.map((name) => {
-        const option = document.createElement("option");
-        option.value = name;
-        option.textContent = `@${name}`;
-        return option;
-      }));
-      origin.className = config.originMatches ? "ok" : "bad";
-      origin.textContent = config.originMatches
-        ? `Connected at ${config.browserOrigin}. The configured Fedify origin matches.`
-        : `Origin mismatch: browser=${config.browserOrigin}, Fedify=${config.configuredBaseUrl}. Restart with LAB_BASE_URL=${config.browserOrigin}`;
-      if (show) output.textContent = JSON.stringify(config, null, 2);
-    }
-
-    async function run(action) {
-      output.textContent = "Loading…";
-      const handle = actor.value || "video";
-      try {
-        let body;
-        if (action === "health") body = await jsonRequest("/healthz");
-        if (action === "config") {
-          await loadConfig(true);
-          return;
-        }
-        if (action === "followers") body = await jsonRequest("/api/followers");
-        if (action === "webfinger") {
-          const resource = `acct:${handle}@${location.host}`;
-          body = await jsonRequest(`/.well-known/webfinger?resource=${encodeURIComponent(resource)}`, {
-            headers: { Accept: "application/jrd+json" }
-          });
-        }
-        if (action === "actor") {
-          body = await jsonRequest(`/federation/actors/${handle}`, {
-            headers: { Accept: "application/activity+json" }
-          });
-        }
-        if (action === "announce") {
-          body = await jsonRequest(`/api/announce/${handle}`, { method: "POST" });
-        }
-        output.textContent = JSON.stringify(body, null, 2);
-      } catch (error) {
-        output.textContent = error.stack || error.message;
-      }
-    }
-
-    document.addEventListener("click", (event) => {
-      const action = event.target.dataset.action;
-      if (action) run(action);
-    });
-
-    loadConfig().catch((error) => {
-      origin.className = "bad";
-      origin.textContent = "The browser could not reach the server.";
-      output.textContent = error.stack || error.message;
-    });
-  </script>
-</body>
+    <script src="/static/index.js"></script>
+  </body>
 </html>
