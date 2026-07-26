@@ -46,7 +46,7 @@ function writeFileIfMissing(filePath, content, encoding = 'utf8') {
 
 function ensurePublicFixtures(publicDir) {
    ensureDir(publicDir);
-   writeFileIfMissing(path.join(publicDir, 'index.html'), `<!doctype html>
+   writeFileIfMissing(path.join(publicDir, 'fedibasic.html'), `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -417,7 +417,7 @@ function createStaticFediverseApp(options = {}) {
    app.use('/static', express.static(config.publicDir));
 
    app.get('/', (_req, res) => {
-      return res.sendFile(path.join(config.publicDir, 'index.html'));
+      return res.sendFile(path.join(config.publicDir, 'fedibasic.html'));
    });
 
    app.get('/healthz', (_req, res) => {

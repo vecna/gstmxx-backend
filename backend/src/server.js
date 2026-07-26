@@ -2,12 +2,15 @@ const { bootstrapRuntime } = require('./bootstrap');
 
 bootstrapRuntime();
 
+const fs = require('node:fs');
+const path = require('node:path');
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const uploadsRouter = require('./routes/uploads');
 const adminRouter = require('./routes/admin');
 const publicRouter = require('./routes/public'); // Importazione del nuovo router dei feed RSS
 const { startStaleUploadCleanup } = require('./services/cleanup');
+const { ROOT_DIR } = require('./paths');
 
 const PORT = process.env.PORT || 3000;
 const AP_ENABLED = /^(1|true|yes|on)$/i.test(process.env.GSTMXX_ENABLE_AP || '');
@@ -42,6 +45,14 @@ function isolateMiddleware(label, middleware) {
 
 function createApp() {
    const app = express();
+   const clientInterfaceDir = path.resolve(
+      process.env.GSTMXX_CLIENT_INTERFACE_DIR || path.join(ROOT_DIR, '..', 'client-interface')
+   );
+
+   if (fs.existsSync(clientInterfaceDir)) {
+      // Priorita massima: se una risorsa esiste in client-interface, viene servita prima delle route backend.
+      app.use(express.static(clientInterfaceDir, { index: 'index.html' }));
+   }
 
    // 1. Infrastruttura ActivityPub. Disattivata di default finche B7 non riscrive Fedify correttamente.
    if (AP_ENABLED) {
