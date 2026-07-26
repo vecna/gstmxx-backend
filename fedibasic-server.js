@@ -42,11 +42,7 @@ const DATA_DIR = path.resolve(
 const POST_DIR = path.join(DATA_DIR, "posts");
 const POST_TOKEN = process.env.LAB_POST_TOKEN || "big-oopsie";
 const PUBLIC_DIR = path.join(__dirname, "fedibasic-public");
-const CLIENT_INTERFACE_DIR = path.resolve(
-  process.env.LAB_CLIENT_INTERFACE_DIR ||
-  process.env.GSTMXX_CLIENT_INTERFACE_DIR ||
-  path.join(__dirname, "client-interface")
-);
+const CLIENT_INTERFACE_DIR = path.resolve(path.join(__dirname, "client-interface"));
 const ACTORS = ["video", "ghostyles", "news", "clipboard"];
 const ALGORITHMS = ["RSASSA-PKCS1-v1_5", "Ed25519"];
 
@@ -667,6 +663,8 @@ function createApp() {
     // Top-priority static layer: if the client has a matching file/path, serve it before backend routes.
     app.use(express.static(CLIENT_INTERFACE_DIR, { index: "index.html" }));
   }
+
+  app.use("/fedibasic", express.static(PUBLIC_DIR, { index: "index.html" }));
 
   app.use((req, res, next) => {
     const startedAt = process.hrtime.bigint();
