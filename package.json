@@ -13,7 +13,6 @@
     "fedibasic:debug": "DEBUG=fedibasic:flow,fedibasic:http,fedibasic:store,fedibasic:activitypub node --env-file-if-exists=fedibasic.env fedibasic-server.js",
     "fedibasic:test": "node --test fedibasic-test/smoke.test.js",
     "fedibasic:tunnel": "fedify tunnel ${PORT:-4040}",
-    "fediverse:static": "node fediverse-static/server.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
     "test:online": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config jest.online.config.js",
