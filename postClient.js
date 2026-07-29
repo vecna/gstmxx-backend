@@ -55,7 +55,7 @@ function errorChain(error) {
 function connectionHint(error) {
   const detail = errorChain(error);
   if (detail.includes("ECONNREFUSED")) {
-    return "The API is not listening there. Check npm run fedibasic:start and the PORT value.";
+    return "The API is not listening there. Check npm start and the PORT value.";
   }
   if (detail.includes("ENOTFOUND")) {
     return "DNS could not resolve that host. Check the spelling (for example, hhostmaxxing vs ghostmaxxing).";

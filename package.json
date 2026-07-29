@@ -1,21 +1,17 @@
 {
   "name": "ghostmaxxing-backend",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "private": true,
-  "main": "backend/src/server.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node backend/src/server.js",
-    "dev": "node --watch backend/src/server.js",
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "debug": "DEBUG=gstmxx:flow,gstmxx:http,gstmxx:store,gstmxx:activitypub node --env-file-if-exists=env server.js",
+    "test": "node --test",
+    "tunnel": "fedify tunnel ${PORT:-4040}",
     "post": "node manual-add-post.js",
     "quote-picture": "node manual-quote-picture.js",
-    "fedibasic:start": "node fedibasic-server.js",
-    "fedibasic:dev": "node --watch fedibasic-server.js",
-    "fedibasic:debug": "DEBUG=fedibasic:flow,fedibasic:http,fedibasic:store,fedibasic:activitypub node --env-file-if-exists=fedibasic.env fedibasic-server.js",
-    "fedibasic:test": "node --test fedibasic-test/smoke.test.js",
-    "fedibasic:tunnel": "fedify tunnel ${PORT:-4040}",
-    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
-    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
-    "test:online": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config jest.online.config.js",
+    "test:legacy": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "c2p": "code2prompt --exclude node_modules --exclude .git --exclude .vscode --exclude .idea --exclude .husky --exclude .github --exclude .gitignore --exclude package-lock.json -O c2p-`date -I`.txt"
   },
   "engines": {
@@ -25,7 +21,6 @@
     "@fedify/cli": "^2.3.3",
     "@fedify/fedify": "^1.5.9",
     "@js-temporal/polyfill": "^0.5.1",
-    "better-sqlite3": "^11.0.0",
     "express": "^4.21.2",
     "express-rate-limit": "^7.2.0",
     "fluent-ffmpeg": "^2.1.3",
@@ -34,6 +29,7 @@
     "node-fetch": "^3.3.2"
   },
   "devDependencies": {
+    "fast-xml-parser": "^4.4.1",
     "jest": "^30.4.2"
   }
 }
