@@ -1,4 +1,4 @@
 .DS_Store
 node_modules
 client-interface
-fedibasic-data
+data/
