@@ -176,6 +176,8 @@ function listByActor(postsDirectory, actor, traceId) {
  * @param {string}  [options.quoteAuthorizationUrl]
  * @param {("pictures"|"videos")} [options.media] - Explicit media class.
  * @param {number}  [options.likes=0] - Initial like count.
+ * @param {string}  [options.title] - Optional headline (required for news).
+ * @param {string}  [options.subtitle] - Optional deck/subtitle.
  * @param {string}  [options.traceId]
  * @returns {Object} The stored post record.
  * @throws {Error} If `content` is empty or not a string.
@@ -194,7 +196,7 @@ function create(postsDirectory, content, actor, options = {}) {
     createdAt: new Date().toISOString()
   };
 
-  for (const key of ["attachment", "quoteUrl", "quoteAuthorizationUrl"]) {
+  for (const key of ["attachment", "quoteUrl", "quoteAuthorizationUrl", "title", "subtitle"]) {
     if (options[key] != null) post[key] = options[key];
   }
 

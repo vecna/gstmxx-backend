@@ -18,6 +18,7 @@
 
 const express = require("express");
 const multer = require("multer");
+const rateLimit = require("express-rate-limit");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
@@ -51,10 +52,23 @@ function normalizeKind(kind) {
  * @param {import("../postStore")} ctx.postStore
  * @param {string} ctx.postDir
  * @param {(post:Object, traceId?:string)=>Promise<{followers:number}>} ctx.emitDelete
+ * @param {{windowMs?:number, max?:number}} [ctx.rateLimit] - Per-IP intake limit.
  * @returns {import("express").Router}
  */
 function createUploadsRouter(ctx) {
   const router = express.Router();
+
+  // Rate limit the public intake per client IP. Trust-proxy is set on the app,
+  // so the client IP is the real one behind nginx. Window/limit are overridable
+  // for tests and tuning.
+  const uploadLimiter = rateLimit({
+    windowMs: (ctx.rateLimit && ctx.rateLimit.windowMs) || 15 * 60 * 1000,
+    limit: (ctx.rateLimit && ctx.rateLimit.max) || 20,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    validate: { trustProxy: false },
+    message: { ok: false, message: "Too many uploads from this address, please slow down." }
+  });
 
   const storage = multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, ctx.incomingDir),
@@ -72,7 +86,7 @@ function createUploadsRouter(ctx) {
     }
   });
 
-  router.post("/", upload.single("video"), async (req, res) => {
+  router.post("/", uploadLimiter, upload.single("video"), async (req, res) => {
     try {
       if (!req.file) {
         return res.status(400).json({ ok: false, message: "No file received." });

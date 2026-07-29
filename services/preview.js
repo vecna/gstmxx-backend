@@ -65,7 +65,8 @@ function renderPostPage(post, options) {
   const baseUrl = options.baseUrl;
   const url = new URL(`/posts/${post.id}`, baseUrl).href;
   const actorLabel = `Ghostmaxxing: ${post.actor}`;
-  const description = truncate(post.content);
+  const headline = post.title || actorLabel;
+  const description = post.subtitle ? truncate(post.subtitle, 200) : truncate(post.content);
   const ogImage = ogImageFor(post);
   const isVideo = post.attachment && String(post.attachment.mediaType).startsWith("video/");
 
@@ -76,7 +77,7 @@ function renderPostPage(post, options) {
       : `<img alt="${escapeHtml(post.attachment.name)}" src="${escapeHtml(post.attachment.url)}">`;
 
   const meta = [
-    `<meta property="og:title" content="${escapeHtml(actorLabel)}">`,
+    `<meta property="og:title" content="${escapeHtml(headline)}">`,
     `<meta property="og:description" content="${escapeHtml(description)}">`,
     `<meta property="og:type" content="article">`,
     `<meta property="og:url" content="${escapeHtml(url)}">`,
@@ -91,7 +92,7 @@ function renderPostPage(post, options) {
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>${escapeHtml(actorLabel)}</title>
+    <title>${escapeHtml(headline)}</title>
     ${meta}
     <style>
       :root { color-scheme: light dark; }
@@ -106,6 +107,8 @@ function renderPostPage(post, options) {
   <body>
     <main>
       <div class="kicker">@${escapeHtml(post.actor)} · ${escapeHtml(post.createdAt)}</div>
+      ${post.title ? `<h1>${escapeHtml(post.title)}</h1>` : ""}
+      ${post.subtitle ? `<p class="deck">${escapeHtml(post.subtitle)}</p>` : ""}
       ${mediaBlock}
       <p>${escapeHtml(post.content)}</p>
       <p><a href="${escapeHtml(url)}">Permalink</a></p>

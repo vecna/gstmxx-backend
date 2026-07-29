@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ghostmaxxing — compose</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: #0f1013; color: #f2f3f5; }
+    main { max-width: 620px; margin: 0 auto; padding: 24px; }
+    h1 { font-size: 20px; }
+    label { display: block; margin: 16px 0 6px; color: #aeb4c0; font-size: 13px; }
+    textarea, input, select { width: 100%; box-sizing: border-box; padding: 10px; border-radius: 8px;
+      border: 1px solid #2a2d34; background: #16181d; color: #f2f3f5; font: inherit; }
+    textarea { min-height: 140px; resize: vertical; }
+    button { margin-top: 18px; padding: 10px 16px; border-radius: 8px; border: 1px solid #2f7d46;
+      background: #174927; color: #fff; font: inherit; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: default; }
+    #status { margin-top: 16px; color: #9aa3b2; word-break: break-word; }
+    .hint { color: #6b7280; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Compose an update</h1>
+    <p class="hint">Staff authoring. Published immediately (no moderation queue), then federated and echoed to matching filter actors.</p>
+
+    <label for="actor">Actor</label>
+    <select id="actor">
+      <option value="news" selected>news</option>
+      <option value="ghostyles">ghostyles</option>
+      <option value="clipboard">clipboard</option>
+      <option value="video">video</option>
+    </select>
+
+    <label for="title">Title <span class="hint">(required)</span></label>
+    <input id="title" type="text" placeholder="A clear headline">
+
+    <label for="subtitle">Subtitle <span class="hint">(optional)</span></label>
+    <input id="subtitle" type="text" placeholder="A short deck">
+
+    <label for="content">Text</label>
+    <textarea id="content" placeholder="What's the update?"></textarea>
+
+    <label for="image">Image (optional, PNG or JPEG)</label>
+    <input id="image" type="file" accept="image/png,image/jpeg">
+
+    <label for="alt">Image alt text</label>
+    <input id="alt" type="text" placeholder="Describe the image for screen readers">
+
+    <button id="publish" type="button">Publish</button>
+    <div id="status"></div>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $("status");
+
+    $("publish").addEventListener("click", async () => {
+      const title = $("title").value.trim();
+      const content = $("content").value.trim();
+      const file = $("image").files[0];
+      if (!title) { statusEl.textContent = "A title is required."; return; }
+      if (!content && !file) { statusEl.textContent = "Add text, an image, or both."; return; }
+
+      const form = new FormData();
+      form.set("actor", $("actor").value);
+      form.set("title", title);
+      form.set("subtitle", $("subtitle").value.trim());
+      form.set("content", content);
+      form.set("altText", $("alt").value.trim());
+      if (file) form.set("image", file, file.name);
+
+      $("publish").disabled = true;
+      statusEl.textContent = "Publishing…";
+      try {
+        const res = await fetch("/api/admin/compose", { method: "POST", body: form });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.message || `Failed (${res.status})`);
+        statusEl.innerHTML = `Published: <a href="${body.post.url}">${body.post.url}</a>` +
+          (body.federation && typeof body.federation.followers === "number"
+            ? ` — delivered to ${body.federation.followers} follower(s).` : "");
+        $("content").value = ""; $("alt").value = ""; $("image").value = "";
+        $("title").value = ""; $("subtitle").value = "";
+      } catch (err) {
+        statusEl.textContent = err.message;
+      } finally {
+        $("publish").disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

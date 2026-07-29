@@ -18,8 +18,29 @@
  */
 
 const express = require("express");
+const multer = require("multer");
 const crypto = require("node:crypto");
 const path = require("node:path");
+const fs = require("node:fs");
+
+/**
+ * Sniff whether a file starts with PNG or JPEG magic bytes.
+ * @param {string} filePath
+ * @returns {?("image/png"|"image/jpeg")} The detected type, or null.
+ */
+function sniffImage(filePath) {
+  try {
+    const fd = fs.openSync(filePath, "r");
+    const head = Buffer.alloc(8);
+    fs.readSync(fd, head, 0, 8, 0);
+    fs.closeSync(fd);
+    if (head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+    if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return "image/jpeg";
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Constant-time HTTP Basic Auth middleware factory.
@@ -77,7 +98,11 @@ function safeEqual(a, b) {
  * @param {string} ctx.baseUrl
  * @param {(record:Object)=>string} ctx.actorForUpload
  * @param {(post:Object, traceId?:string)=>Promise<{followers:number}>} ctx.announce
+ * @param {(post:Object, traceId?:string)=>Promise<Array>} [ctx.afterPublish]
  * @param {string} ctx.adminHtmlPath
+ * @param {string} ctx.composeHtmlPath - Path to the composer page HTML.
+ * @param {ReadonlyArray<string>} ctx.actors - Actors the composer may publish as.
+ * @param {()=>void} [ctx.onNewsChange] - Called after a news post is published.
  * @param {string} ctx.adminUser
  * @param {string} ctx.adminPass
  * @returns {import("express").Router}
@@ -170,6 +195,17 @@ function createAdminRouter(ctx) {
         federation = { error: error.message };
       }
 
+      // Fan out to matching echo filter actors (e.g. ghostyles-pictures).
+      // Non-fatal: a filter delivery failure must not fail the approval.
+      let echoes = [];
+      if (typeof ctx.afterPublish === "function") {
+        try {
+          echoes = await ctx.afterPublish(post, req.flow && req.flow.id);
+        } catch (error) {
+          echoes = [{ error: error.message }];
+        }
+      }
+
       return res.json({
         ok: true,
         message: "Approved, published, and federated.",
@@ -180,7 +216,8 @@ function createAdminRouter(ctx) {
         thumbnail: processed.thumbnailName,
         publicUrl,
         moderatedAt: approved && approved.moderatedAt,
-        federation
+        federation,
+        echoes
       });
     } catch (error) {
       console.error("[admin] approve error:", error);
@@ -200,6 +237,98 @@ function createAdminRouter(ctx) {
       return res.json({ ok: true, message: "Upload rejected and the raw file deleted." });
     } catch (error) {
       console.error("[admin] reject error:", error);
+      return res.status(500).json({ ok: false, message: error.message });
+    }
+  });
+
+  // --- News composer (staff authoring, direct publish, no moderation) ------
+  const composeUpload = multer({
+    storage: multer.diskStorage({
+      destination: (_req, _file, cb) => cb(null, ctx.dirs.approved),
+      filename: (_req, file, cb) =>
+        cb(null, `${crypto.randomBytes(16).toString("hex")}${path.extname(file.originalname).toLowerCase() || ".img"}`)
+    }),
+    limits: { fileSize: 10 * 1024 * 1024 },
+    fileFilter: (_req, file, cb) =>
+      ["image/png", "image/jpeg"].includes(file.mimetype)
+        ? cb(null, true)
+        : cb(new Error("Composer images must be PNG or JPEG."))
+  });
+
+  router.get("/compose", (_req, res) => res.sendFile(ctx.composeHtmlPath));
+
+  router.post("/compose", composeUpload.single("image"), async (req, res) => {
+    try {
+      const title = (req.body.title || "").trim();
+      const subtitle = (req.body.subtitle || "").trim();
+      const content = (req.body.content || "").trim();
+      const actor = req.body.actor || "news";
+      const altText = (req.body.altText || "").trim();
+
+      if (!Array.isArray(ctx.actors) || !ctx.actors.includes(actor)) {
+        if (req.file) ctx.media.removeIfExists(req.file.path);
+        return res.status(400).json({ ok: false, message: `actor must be one of: ${(ctx.actors || []).join(", ")}.` });
+      }
+      // A title is mandatory: it drives the /latest TOC, the reading list and
+      // the dedicated page, and nudges authors toward considered updates.
+      if (!title) {
+        if (req.file) ctx.media.removeIfExists(req.file.path);
+        return res.status(400).json({ ok: false, message: "A title is required." });
+      }
+      if (!content && !req.file) {
+        return res.status(400).json({ ok: false, message: "Provide text, an image, or both." });
+      }
+
+      let attachment = null;
+      let mediaClass = null;
+      if (req.file) {
+        const sniffed = sniffImage(req.file.path);
+        if (!sniffed) {
+          ctx.media.removeIfExists(req.file.path);
+          return res.status(400).json({ ok: false, message: "The uploaded file is not a valid PNG or JPEG." });
+        }
+        // News media is trusted (staff) → written straight to approved storage.
+        attachment = {
+          type: "Image",
+          url: ctx.media.publicUrlForApproved(ctx.baseUrl, "clipboard", req.file.filename),
+          mediaType: sniffed,
+          name: altText || title
+        };
+        mediaClass = "pictures";
+      }
+
+      const post = ctx.postStore.create(ctx.postDir, content || title, actor, {
+        title,
+        subtitle: subtitle || undefined,
+        attachment,
+        media: mediaClass,
+        traceId: req.flow && req.flow.id
+      });
+
+      let federation;
+      try {
+        federation = await ctx.announce(post, req.flow && req.flow.id);
+      } catch (error) {
+        federation = { error: error.message };
+      }
+      let echoes = [];
+      if (typeof ctx.afterPublish === "function") {
+        echoes = await ctx.afterPublish(post, req.flow && req.flow.id).catch(() => []);
+      }
+      // Refresh the /latest aggregator immediately for news changes.
+      if (actor === "news" && typeof ctx.onNewsChange === "function") ctx.onNewsChange();
+
+      return res.status(201).json({
+        ok: true,
+        message: "Published.",
+        actor,
+        post: { id: post.id, url: new URL(`/posts/${post.id}`, ctx.baseUrl).href },
+        federation,
+        echoes
+      });
+    } catch (error) {
+      if (req.file) ctx.media.removeIfExists(req.file.path);
+      console.error("[admin] compose error:", error);
       return res.status(500).json({ ok: false, message: error.message });
     }
   });

@@ -24,12 +24,14 @@ const { isDeepStrictEqual } = require("node:util");
 const { Temporal } = require("@js-temporal/polyfill");
 const postStore = require("./postStore.js");
 const {
+  Announce,
   Accept,
   Create,
   Delete,
   Endpoints,
   Follow,
   Image,
+  Like,
   Note,
   Person,
   PUBLIC_COLLECTION,
@@ -51,8 +53,13 @@ const { startStaleUploadCleanup } = require("./services/cleanup.js");
 const { createUploadsRouter } = require("./routes/uploads.js");
 const { createAdminRouter } = require("./routes/admin.js");
 const { createFeedsRouter } = require("./routes/feeds.js");
+const { createLatestRouter } = require("./routes/latest.js");
+const news = require("./services/news.js");
 const xml = require("./services/xml.js");
 const preview = require("./services/preview.js");
+const digest = require("./lib/digest.js");
+const digestStore = require("./digestStore.js");
+const likes = require("./services/likes.js");
 
 // The former line-by-line logs are intentionally silent.  The request-scoped
 // gstmxx:flow logger below records state transitions instead.
@@ -89,6 +96,59 @@ const ADMIN_PASS = process.env.GSTMXX_ADMIN_PASS || "change-me-now-2026";
 function actorForUpload(record) {
   if (record.ghostyleId) return "ghostyles";
   return record.kind === "clipboard" ? "clipboard" : "video";
+}
+
+/**
+ * The filter actors this instance runs. Each handle is parsed by the digest
+ * engine into a spec; unparseable handles are dropped. Add/remove filters by
+ * editing this list or the `GSTMXX_FILTERS` env var — their behaviour is
+ * derived entirely from the handle (see {@link module:lib/digest}).
+ * @type {ReadonlyArray<string>}
+ */
+const DEFAULT_FILTERS = [
+  "ghostyles-pictures",
+  "ghostyles-video",
+  "ghostyles-daily",
+  "ghostyles-weekly",
+  "ghostyles-top-rated"
+];
+const ENABLED_FILTERS = (process.env.GSTMXX_FILTERS
+  ? process.env.GSTMXX_FILTERS.split(",").map((s) => s.trim()).filter(Boolean)
+  : DEFAULT_FILTERS)
+  .map((handle) => ({ handle, spec: digest.parseDigestSpec(handle) }))
+  .filter((f) => f.spec);
+const FILTER_HANDLES = ENABLED_FILTERS.map((f) => f.handle);
+const ECHO_FILTERS = ENABLED_FILTERS.filter((f) => f.spec.mode === "echo");
+const DIGEST_FILTERS = ENABLED_FILTERS.filter((f) => f.spec.mode === "digest");
+const SERVABLE_ACTORS = new Set([...ACTORS, ...FILTER_HANDLES]);
+
+/**
+ * Whether a handle is a servable local actor (a raw actor or an enabled
+ * filter). Gates the WebFinger/actor/keys/followers/inbox surfaces.
+ * @param {string} handle
+ * @returns {boolean}
+ */
+function isServableActor(handle) {
+  return SERVABLE_ACTORS.has(handle);
+}
+
+/**
+ * Human summary for an actor's profile, describing a filter's algorithm.
+ * @param {string} handle
+ * @returns {string}
+ */
+function describeActor(handle) {
+  if (ACTORS.includes(handle)) {
+    return "Content actor served by the Ghostmaxxing backend.";
+  }
+  const spec = digest.parseDigestSpec(handle);
+  if (!spec) return "Filter actor.";
+  if (spec.mode === "echo") {
+    return `Echo filter: re-shares every approved ${spec.media} item from @${spec.source}.`;
+  }
+  const window = spec.window ? spec.window.name : "each run";
+  const media = spec.media !== "all" ? ` (${spec.media} only)` : "";
+  return `Digest filter: one ${spec.selection} pick per ${window} from @${spec.source}${media}.`;
 }
 const ALGORITHMS = ["RSASSA-PKCS1-v1_5", "Ed25519"];
 
@@ -319,14 +379,14 @@ const federation = createFederation({
 federation
   .setActorDispatcher("/federation/actors/{handle}", async (ctx, handle) => {
     debugS("setActorDispatcher: handling actor document request for handle=%s", handle);
-    if (!ACTORS.includes(handle)) return null;
+    if (!isServableActor(handle)) return null;
     const keys = await ctx.getActorKeyPairs(handle);
     debugN("setActorDispatcher: assembling Person actor payload for handle=%s", handle);
     return new Person({
       id: ctx.getActorUri(handle),
       preferredUsername: handle,
-      name: `Ghostmaxxing lab: ${handle}`,
-      summary: "Local diagnostic actor served by the Fedify browser lab.",
+      name: `Ghostmaxxing: ${handle}`,
+      summary: describeActor(handle),
       publicKey: keys[0]?.cryptographicKey,
       assertionMethods: keys.map((key) => key.multikey),
       inbox: ctx.getInboxUri(handle),
@@ -336,19 +396,19 @@ federation
   })
   .setKeyPairsDispatcher(async (_ctx, handle) => {
     debugS("setKeyPairsDispatcher: resolving keypairs for handle=%s", handle);
-    if (!ACTORS.includes(handle)) return [];
+    if (!isServableActor(handle)) return [];
     return actorKeyPairs(handle);
   })
   .mapHandle((_ctx, handle) => {
     debugV("mapHandle: validating account mapping for handle=%s", handle);
-    return ACTORS.includes(handle) ? handle : null;
+    return isServableActor(handle) ? handle : null;
   });
 
 federation.setFollowersDispatcher(
   "/federation/actors/{handle}/followers",
   (_ctx, handle) => {
     debugS("setFollowersDispatcher: building followers collection for handle=%s", handle);
-    if (!ACTORS.includes(handle)) return null;
+    if (!isServableActor(handle)) return null;
     debugN("setFollowersDispatcher: transforming follower rows into ActivityPub ids");
     return {
       items: followerRows(handle).map((row) => ({
@@ -372,7 +432,7 @@ federation
       actor: activity.actorId
     });
 
-    if(!ACTORS.includes(handle) || !activity.objectId) {
+    if(!isServableActor(handle) || !activity.objectId) {
       event("activitypub", "follow.rejected", {
         recipient: handle,
         reason: "unknown recipient or missing object"
@@ -433,8 +493,29 @@ federation
       deliveredTo: inboxUrl
     });
   })
+  .on(Like, async (ctx, activity) => {
+    const postId = likes.postIdFromUrl(activity.objectId, BASE_URL);
+    if (!postId || !activity.actorId) return;
+    const post = postStore.read(POST_DIR, postId);
+    if (!post) return;
+    postStore.update(POST_DIR, postId, likes.applyLike(post, activity.actorId.href));
+    event("activitypub", "like.added", { postId, actor: activity.actorId });
+  })
   .on(Undo, async (ctx, activity) => {
-    if (ACTORS.includes(ctx.recipient) && activity.actorId) {
+    // Undo may wrap a Like (unlike) or a Follow (unfollow); dereference to tell.
+    const inner = await activity.getObject(ctx).catch(() => null);
+    if (inner instanceof Like) {
+      const postId = likes.postIdFromUrl(inner.objectId, BASE_URL);
+      if (postId && activity.actorId) {
+        const post = postStore.read(POST_DIR, postId);
+        if (post) {
+          postStore.update(POST_DIR, postId, likes.applyUnlike(post, activity.actorId.href));
+          event("activitypub", "like.removed", { postId, actor: activity.actorId });
+        }
+      }
+      return;
+    }
+    if (isServableActor(ctx.recipient) && activity.actorId) {
       deleteFollower(ctx.recipient, activity.actorId.href);
       event("activitypub", "follow.removed", {
         recipient: ctx.recipient,
@@ -738,6 +819,185 @@ async function emitDeleteForPost(post, traceId) {
   return { followers };
 }
 
+/**
+ * Echo re-share: a filter actor boosts (Announce) an original post to its own
+ * followers. Used by media echo filters like `ghostyles-pictures`.
+ *
+ * @param {string} filterHandle
+ * @param {Object} post - The original post being echoed.
+ * @param {string} [traceId]
+ * @returns {Promise<{followers:number}>}
+ */
+async function emitBoost(filterHandle, post, traceId) {
+  const ctx = federation.createContext(new URL(BASE_URL), undefined);
+  const activity = new Announce({
+    id: new URL(`/federation/activities/boost-${filterHandle}-${post.id}-${Date.now()}`, BASE_URL),
+    actor: ctx.getActorUri(filterHandle),
+    object: new URL(`/posts/${post.id}`, BASE_URL),
+    tos: [PUBLIC_COLLECTION],
+    ccs: [ctx.getFollowersUri(filterHandle)]
+  });
+  const followers = followerRows(filterHandle).length;
+  await ctx.sendActivity(
+    { identifier: filterHandle },
+    "followers",
+    activity,
+    { immediate: true, preferSharedInbox: true }
+  );
+  event("activitypub", "echo.boost", { filter: filterHandle, postId: post.id, followers });
+  return { followers };
+}
+
+/**
+ * Deliver a freshly published post to every matching echo filter. Called after
+ * a raw-actor post is published (e.g. on approval).
+ *
+ * @param {Object} post
+ * @param {string} [traceId]
+ * @returns {Promise<Array>}
+ */
+async function deliverEchoes(post, traceId) {
+  const delivered = [];
+  const media = postStore.mediaOf(post);
+  for (const filter of ECHO_FILTERS) {
+    if (filter.spec.source !== post.actor) continue;
+    if (filter.spec.media !== "all" && filter.spec.media !== media) continue;
+    try {
+      delivered.push({ handle: filter.handle, ...(await emitBoost(filter.handle, post, traceId)) });
+    } catch (error) {
+      event("activitypub", "echo.error", { filter: filter.handle, error: error.message });
+    }
+  }
+  return delivered;
+}
+
+/**
+ * Build digest candidates for a source actor: its media posts mapped to the
+ * shape the digest engine expects.
+ * @param {string} source
+ * @param {string} [traceId]
+ * @returns {Array<{id:string, media:string, likes:number, createdAt:string}>}
+ */
+function digestCandidates(source, traceId) {
+  return postStore
+    .listByActor(POST_DIR, source, traceId)
+    .map((p) => ({ id: p.id, media: postStore.mediaOf(p), likes: p.likes || 0, createdAt: p.createdAt }))
+    .filter((c) => c.media);
+}
+
+/**
+ * Run one digest for a filter: pick within the window, publish a FEP-044f quote
+ * of the pick (headed by the algorithm summary) as the filter actor, and record
+ * the run. Records the run even when nothing was eligible, so an empty window
+ * does not busy-retry.
+ *
+ * @param {{handle:string, spec:Object}} filter
+ * @param {number} now - Epoch ms window end.
+ * @param {string} [traceId]
+ * @returns {Promise<{picked:?string, postId?:string, followers:number, summary?:string}>}
+ */
+async function emitDigestQuote(filter, now, traceId) {
+  const { handle, spec } = filter;
+  const candidates = digestCandidates(spec.source, traceId);
+  const pick = digest.selectFromWindow(candidates, spec, { now });
+  digestStore.set(DATA_DIR, handle, {
+    lastRunAt: new Date(now).toISOString(),
+    lastPickId: pick ? pick.id : null
+  });
+  if (!pick) {
+    event("activitypub", "digest.empty", { filter: handle });
+    return { picked: null, followers: 0 };
+  }
+  const summary = digest.summarizeWindow(candidates, spec, now);
+  const postId = crypto.randomUUID();
+  const quoteUrl = new URL(`/posts/${pick.id}`, BASE_URL).href;
+  const quoteAuthorizationUrl = new URL(`/quote-authorizations/${postId}`, BASE_URL).href;
+  const post = postStore.create(POST_DIR, summary, handle, {
+    id: postId,
+    quoteUrl,
+    quoteAuthorizationUrl,
+    traceId
+  });
+  const delivery = await announcePost(post, traceId);
+  event("activitypub", "digest.published", {
+    filter: handle,
+    postId,
+    pick: pick.id,
+    followers: delivery.followers
+  });
+  return { picked: pick.id, postId, followers: delivery.followers, summary };
+}
+
+/**
+ * Run every digest filter whose window is due (or all of them when `force`).
+ * One at a time, awaiting each — the digest count is small, so this stays cheap
+ * even as a background catch-up after downtime.
+ *
+ * @param {Object} [options]
+ * @param {number} [options.now=Date.now()]
+ * @param {boolean} [options.force=false]
+ * @param {string} [options.traceId]
+ * @returns {Promise<Array>}
+ */
+async function runDueDigests(options = {}) {
+  const now = options.now ?? Date.now();
+  const results = [];
+  for (const filter of DIGEST_FILTERS) {
+    const state = digestStore.get(DATA_DIR, filter.handle);
+    const due = options.force || digest.isDue(filter.spec, state && state.lastRunAt, now);
+    if (!due) continue;
+    try {
+      results.push({ handle: filter.handle, ...(await emitDigestQuote(filter, now, options.traceId)) });
+    } catch (error) {
+      event("activitypub", "digest.error", { filter: filter.handle, error: error.message });
+      results.push({ handle: filter.handle, error: error.message });
+    }
+  }
+  return results;
+}
+
+/**
+ * In-process cache for the `/latest` pages and search index. Rebuilt lazily on
+ * demand, refreshed when it goes stale (TTL backstop) or when
+ * {@link invalidateNews} is called on a news publish/delete.
+ * @type {?{builtAt:number, latestHtml:string, archiveHtml:string, index:Object[]}}
+ */
+let newsCacheState = null;
+
+/** TTL backstop for the news cache. @type {number} */
+const NEWS_TTL_MS = 2 * 60 * 1000;
+
+/**
+ * Rebuild the news cache from the current `news` posts.
+ * @returns {Object} The rebuilt cache state.
+ */
+function buildNewsCache() {
+  const all = postStore.listByActor(POST_DIR, "news");
+  newsCacheState = {
+    builtAt: Date.now(),
+    latestHtml: news.renderLatestPage(all.slice(0, 5), { baseUrl: BASE_URL, total: all.length }),
+    archiveHtml: news.renderArchivePage(all, { baseUrl: BASE_URL }),
+    index: news.buildNewsIndex(all, BASE_URL)
+  };
+  return newsCacheState;
+}
+
+/**
+ * Get the news cache, rebuilding if empty or past the TTL backstop.
+ * @returns {Object}
+ */
+function getNewsCache() {
+  if (!newsCacheState || Date.now() - newsCacheState.builtAt > NEWS_TTL_MS) {
+    buildNewsCache();
+  }
+  return newsCacheState;
+}
+
+/** Drop the news cache so the next request rebuilds it. @returns {void} */
+function invalidateNews() {
+  newsCacheState = null;
+}
+
 function createApp() {
   debugS("createApp: initializing Express app and Fedify bridge routes");
   const app = express();
@@ -811,7 +1071,11 @@ function createApp() {
     validation,
     postStore,
     postDir: POST_DIR,
-    emitDelete: emitDeleteForPost
+    emitDelete: emitDeleteForPost,
+    rateLimit: {
+      windowMs: parsePositiveInt(process.env.GSTMXX_UPLOAD_RATE_WINDOW_MS, 15 * 60 * 1000),
+      max: parsePositiveInt(process.env.GSTMXX_UPLOAD_RATE_MAX, 20)
+    }
   }));
 
   app.use("/api/admin", createAdminRouter({
@@ -825,17 +1089,29 @@ function createApp() {
     baseUrl: BASE_URL,
     actorForUpload,
     adminHtmlPath: path.join(__dirname, "admin", "index.html"),
+    composeHtmlPath: path.join(__dirname, "admin", "compose.html"),
+    actors: ACTORS,
     adminUser: ADMIN_USER,
     adminPass: ADMIN_PASS,
-    announce: announcePost
+    announce: announcePost,
+    afterPublish: deliverEchoes,
+    onNewsChange: invalidateNews
   }));
 
   app.use("/feed", createFeedsRouter({
     postStore,
     postDir: POST_DIR,
     baseUrl: BASE_URL,
-    actors: ACTORS,
+    actors: [...ACTORS, ...FILTER_HANDLES],
     xml
+  }));
+
+  app.use("/latest", createLatestRouter({
+    cache: {
+      latestHtml: () => getNewsCache().latestHtml,
+      archiveHtml: () => getNewsCache().archiveHtml,
+      index: () => getNewsCache().index
+    }
   }));
 
   app.get("/", (_req, res) => {
@@ -1074,6 +1350,17 @@ function createApp() {
     }
   });
 
+  app.post("/api/digests/run", requirePostToken, async (req, res, next) => {
+    try {
+      const force = Boolean(req.body && req.body.force);
+      const now = req.body && req.body.now ? new Date(req.body.now).getTime() : Date.now();
+      const results = await runDueDigests({ force, now, traceId: req.flow.id });
+      return res.json({ ok: true, ran: results.length, results });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
 
   app.post("/api/announce/:handle", async (req, res, next) => {
     debugS("POST /api/announce/:handle: announcing static object for handle=%s", req.params.handle);
@@ -1124,7 +1411,12 @@ function createApp() {
 
   app.get("/healthz", (_req, res) => {
     debugS("GET /healthz: returning health payload");
-    res.json({ ok: true, baseUrl: BASE_URL, actors: ACTORS });
+    res.json({
+      ok: true,
+      baseUrl: BASE_URL,
+      actors: ACTORS,
+      filters: ENABLED_FILTERS.map((f) => ({ handle: f.handle, mode: f.spec.mode }))
+    });
   });
 
   app.use((req, res) => {
@@ -1159,8 +1451,22 @@ function startServer() {
   startStaleUploadCleanup({
     uploadStore,
     uploadsDir: paths.UPLOADS_DIR,
-    dirs: paths.mediaDirs
+    dirs: paths.mediaDirs,
+    staleDays: parsePositiveInt(process.env.GSTMXX_STALE_DAYS, 14)
   });
+
+  // Filter-actor digests. The server is already listening, so the catch-up pass
+  // runs in the background (setImmediate) and never blocks the web surface;
+  // there is one job per digest filter, not per follower, so it stays cheap
+  // even after downtime. The interval timer is unref'd.
+  const digestIntervalMs = parsePositiveInt(process.env.GSTMXX_DIGEST_INTERVAL_MS, 5 * 60 * 1000);
+  setImmediate(() => runDueDigests().catch((error) => console.error("[digest] catch-up failed:", error)));
+  const digestTimer = setInterval(
+    () => runDueDigests().catch((error) => console.error("[digest] tick failed:", error)),
+    digestIntervalMs
+  );
+  if (typeof digestTimer.unref === "function") digestTimer.unref();
+
   const server = createApp().listen(PORT, HOST, () => {
     debugI("startServer: Express listen callback fired and server is ready");
     event("http", "server.ready", {
