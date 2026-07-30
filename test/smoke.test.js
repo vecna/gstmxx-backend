@@ -36,6 +36,22 @@ test("health endpoint works", async () => {
   ]);
 });
 
+test("API docs serve Swagger UI and the OpenAPI document", async () => {
+  const specResponse = await fetch(`${baseUrl}/api/openapi.json`);
+  assert.equal(specResponse.status, 200);
+  assert.match(specResponse.headers.get("content-type"), /application\/json/);
+  const spec = await specResponse.json();
+  assert.equal(spec.openapi, "3.1.0");
+  assert.ok(spec.paths["/api/docs"]);
+
+  const docsResponse = await fetch(`${baseUrl}/api/docs`);
+  assert.equal(docsResponse.status, 200);
+  assert.match(docsResponse.headers.get("content-type"), /text\/html/);
+  const docs = await docsResponse.text();
+  assert.match(docs, /SwaggerUIBundle/);
+  assert.match(docs, /\/api\/openapi\.json/);
+});
+
 test("WebFinger and actor JSON work over real HTTP", async () => {
   const webfinger = await fetch(
     `${baseUrl}/.well-known/webfinger?resource=${encodeURIComponent("acct:video@127.0.0.1:4049")}`,

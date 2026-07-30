@@ -77,6 +77,7 @@ const { DATA_DIR, POST_DIR } = paths;
 const POST_TOKEN = process.env.LAB_POST_TOKEN || "big-oopsie";
 const PUBLIC_DIR = path.join(__dirname, "public");
 const CLIENT_INTERFACE_DIR = path.resolve(path.join(__dirname, "client-interface"));
+const OPENAPI_SPEC_PATH = path.join(__dirname, "tutorials", "openapi.json");
 const ACTORS = ["video", "ghostyles", "news", "clipboard"];
 const ADMIN_USER = process.env.GSTMXX_ADMIN_USER || "admin";
 const ADMIN_PASS = process.env.GSTMXX_ADMIN_PASS || "change-me-now-2026";
@@ -602,6 +603,35 @@ function requirePostToken(req, res, next) {
 function publicPost(post) {
   const url = new URL(`/posts/${post.id}`, BASE_URL).href;
   return { ...post, url };
+}
+
+function renderSwaggerDocs() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ghostmaxxing API docs</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+  <style>
+    body { margin: 0; background: #fff; }
+    .swagger-ui .topbar { display: none; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    window.ui = SwaggerUIBundle({
+      url: "/api/openapi.json",
+      dom_id: "#swagger-ui",
+      deepLinking: true,
+      presets: [SwaggerUIBundle.presets.apis],
+      layout: "BaseLayout"
+    });
+  </script>
+</body>
+</html>`;
 }
 
 function escapeHtml(value) {
@@ -1134,6 +1164,16 @@ function createApp() {
         new URL(BASE_URL).protocol === "https:" &&
         !["127.0.0.1", "localhost"].includes(new URL(BASE_URL).hostname)
     });
+  });
+
+  app.get("/api/openapi.json", (_req, res) => {
+    debugS("GET /api/openapi.json: serving OpenAPI document");
+    res.type("application/json").sendFile(OPENAPI_SPEC_PATH);
+  });
+
+  app.get("/api/docs", (_req, res) => {
+    debugS("GET /api/docs: serving Swagger UI");
+    res.type("html").send(renderSwaggerDocs());
   });
 
   app.get("/api/followers", (_req, res) => {

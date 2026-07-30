@@ -1,0 +1,1548 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Ghostmaxxing Backend API",
+    "version": "1.3.0",
+    "summary": "HTTP API, federation, moderation, feed, and diagnostic surfaces for the Ghostmaxxing backend.",
+    "description": "This specification is derived from the Express routes in server.js and routes/*.js. ActivityPub and WebFinger payloads are JSON-LD/JRD surfaces generated through Fedify, so those schemas intentionally allow extension fields."
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "servers": [
+    {
+      "url": "http://127.0.0.1:4040",
+      "description": "Default local server"
+    },
+    {
+      "url": "https://ghostmaxxing.vecna.eu",
+      "description": "Production origin"
+    }
+  ],
+  "tags": [
+    { "name": "System" },
+    { "name": "Public lab" },
+    { "name": "Uploads" },
+    { "name": "Admin" },
+    { "name": "Posts" },
+    { "name": "Feeds" },
+    { "name": "Latest" },
+    { "name": "Federation" },
+    { "name": "Static media" }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "tags": ["Public lab"],
+        "summary": "Serve the diagnostic lab page",
+        "responses": {
+          "200": {
+            "description": "HTML diagnostic lab.",
+            "content": {
+              "text/html": {
+                "schema": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/lab": {
+      "get": {
+        "tags": ["Public lab"],
+        "summary": "Serve the diagnostic lab page from the /lab mount",
+        "responses": {
+          "200": {
+            "description": "HTML diagnostic lab.",
+            "content": {
+              "text/html": {
+                "schema": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Health and actor summary",
+        "responses": {
+          "200": {
+            "description": "Server health and enabled actor/filter summary.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HealthResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Runtime configuration visible to the browser lab",
+        "responses": {
+          "200": {
+            "description": "Runtime origin and actor configuration.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ConfigResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/openapi.json": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Serve the OpenAPI 3.1 document",
+        "responses": {
+          "200": {
+            "description": "OpenAPI 3.1 JSON specification for this backend.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["openapi", "info", "paths"],
+                  "properties": {
+                    "openapi": { "type": "string", "const": "3.1.0" },
+                    "info": { "type": "object", "additionalProperties": true },
+                    "paths": { "type": "object", "additionalProperties": true }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/docs": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Serve Swagger UI for the OpenAPI document",
+        "responses": {
+          "200": {
+            "description": "Swagger UI HTML page that loads /api/openapi.json.",
+            "content": {
+              "text/html": {
+                "schema": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/followers": {
+      "get": {
+        "tags": ["Federation"],
+        "summary": "Return the raw local follower store",
+        "responses": {
+          "200": {
+            "description": "Follower rows keyed by local actor handle.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/FollowersResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/uploads": {
+      "post": {
+        "tags": ["Uploads"],
+        "summary": "Submit a public upload for moderation",
+        "description": "Receives either a video upload or clipboard PNG. The file field is named `video` for both kinds.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": { "$ref": "#/components/schemas/UploadRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Upload accepted into the moderation queue.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UploadCreatedResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/uploads/{id}": {
+      "delete": {
+        "tags": ["Uploads"],
+        "summary": "Owner self-service upload delete",
+        "parameters": [
+          { "$ref": "#/components/parameters/UploadId" },
+          { "$ref": "#/components/parameters/DeleteTokenHeader" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Upload and related files were removed.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DeleteUploadResponse" }
+              }
+            }
+          },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "410": { "$ref": "#/components/responses/Gone" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/admin/": {
+      "get": {
+        "tags": ["Admin"],
+        "summary": "Serve the moderation UI",
+        "security": [{ "adminBasic": [] }],
+        "responses": {
+          "200": {
+            "description": "Moderation HTML page.",
+            "content": {
+              "text/html": { "schema": { "type": "string" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/BasicAuthRequired" }
+        }
+      }
+    },
+    "/api/admin/pending": {
+      "get": {
+        "tags": ["Admin"],
+        "summary": "List pending uploads",
+        "security": [{ "adminBasic": [] }],
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": { "$ref": "#/components/schemas/UploadKind" },
+            "description": "Optional pending queue filter."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pending uploads, oldest first.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PendingUploadsResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/BasicAuthRequired" }
+        }
+      }
+    },
+    "/api/admin/media/{id}": {
+      "get": {
+        "tags": ["Admin"],
+        "summary": "Preview raw pending media",
+        "security": [{ "adminBasic": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/UploadId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pending raw media file.",
+            "content": {
+              "video/mp4": { "schema": { "type": "string", "contentEncoding": "base64" } },
+              "video/webm": { "schema": { "type": "string", "contentEncoding": "base64" } },
+              "video/ogg": { "schema": { "type": "string", "contentEncoding": "base64" } },
+              "image/png": { "schema": { "type": "string", "contentEncoding": "base64" } },
+              "application/octet-stream": { "schema": { "type": "string", "contentEncoding": "base64" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/BasicAuthRequired" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/admin/approve/{id}": {
+      "post": {
+        "tags": ["Admin"],
+        "summary": "Approve a pending upload",
+        "security": [{ "adminBasic": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/UploadId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Upload was processed, published, and delivery was attempted.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApproveUploadResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/BasicAuthRequired" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/admin/reject/{id}": {
+      "post": {
+        "tags": ["Admin"],
+        "summary": "Reject a pending upload",
+        "security": [{ "adminBasic": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/UploadId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Upload was rejected and raw media was deleted.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MessageResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/BasicAuthRequired" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/admin/compose": {
+      "get": {
+        "tags": ["Admin"],
+        "summary": "Serve the staff composer UI",
+        "security": [{ "adminBasic": [] }],
+        "responses": {
+          "200": {
+            "description": "Composer HTML page.",
+            "content": {
+              "text/html": { "schema": { "type": "string" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/BasicAuthRequired" }
+        }
+      },
+      "post": {
+        "tags": ["Admin"],
+        "summary": "Publish a staff-authored post directly",
+        "security": [{ "adminBasic": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": { "$ref": "#/components/schemas/ComposeRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Post was published and delivery was attempted.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ComposeResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/BasicAuthRequired" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/posts": {
+      "get": {
+        "tags": ["Posts"],
+        "summary": "List public posts",
+        "responses": {
+          "200": {
+            "description": "Posts sorted newest first.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PostListResponse" }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Posts"],
+        "summary": "Create a post through the control API",
+        "security": [{ "postBearer": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreatePostRequest" },
+              "examples": {
+                "text": {
+                  "value": {
+                    "actor": "news",
+                    "content": "hello from the CLI",
+                    "publish": false
+                  }
+                },
+                "image": {
+                  "value": {
+                    "actor": "clipboard",
+                    "content": "Original picture post",
+                    "publish": false,
+                    "attachment": {
+                      "type": "Image",
+                      "url": "https://example.com/image.jpg",
+                      "mediaType": "image/jpeg",
+                      "name": "Accessible image description"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Post was created; optional delivery may have run.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CreatePostResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/BearerRequired" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/posts/{id}": {
+      "get": {
+        "tags": ["Posts"],
+        "summary": "Fetch one post as JSON",
+        "parameters": [
+          { "$ref": "#/components/parameters/PostId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Public post record.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PostResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/posts/{id}/announce": {
+      "post": {
+        "tags": ["Posts"],
+        "summary": "Announce an existing post to followers",
+        "security": [{ "postBearer": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/PostId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Post delivery was attempted.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AnnouncePostResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/BearerRequired" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/posts/{id}": {
+      "get": {
+        "tags": ["Posts", "Federation"],
+        "summary": "Serve a post as HTML preview or ActivityPub object",
+        "parameters": [
+          { "$ref": "#/components/parameters/PostId" },
+          {
+            "name": "Accept",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string" },
+            "description": "Use `application/activity+json` or `application/ld+json` for ActivityPub JSON-LD; any other Accept gets HTML."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Content-negotiated post representation.",
+            "content": {
+              "text/html": { "schema": { "type": "string" } },
+              "application/activity+json": {
+                "schema": { "$ref": "#/components/schemas/ActivityPubObject" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/quote-authorizations/{postId}": {
+      "get": {
+        "tags": ["Federation", "Posts"],
+        "summary": "Serve a local FEP-044f QuoteAuthorization object",
+        "parameters": [
+          { "$ref": "#/components/parameters/PostIdNamedPostId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Quote authorization JSON-LD object.",
+            "content": {
+              "application/activity+json": {
+                "schema": { "$ref": "#/components/schemas/QuoteAuthorization" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/digests/run": {
+      "post": {
+        "tags": ["Posts", "Federation"],
+        "summary": "Run due digest filters",
+        "security": [{ "postBearer": [] }],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RunDigestsRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Digest run results.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RunDigestsResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/BearerRequired" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/announce/{handle}": {
+      "post": {
+        "tags": ["Public lab", "Federation"],
+        "summary": "Announce a static diagnostic object for an actor",
+        "parameters": [
+          { "$ref": "#/components/parameters/RawActorHandle" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Diagnostic Create delivery was attempted.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/StaticAnnounceResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/feed/{name}": {
+      "get": {
+        "tags": ["Feeds"],
+        "summary": "Serve an RSS feed",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9-]+\\.xml$"
+            },
+            "description": "Feed filename, for example `all.xml`, `news.xml`, or an enabled filter such as `ghostyles-daily.xml`."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "RSS XML feed.",
+            "content": {
+              "application/rss+xml": {
+                "schema": { "type": "string" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/latest": {
+      "get": {
+        "tags": ["Latest"],
+        "summary": "Serve the latest news page",
+        "responses": {
+          "200": {
+            "description": "Latest news HTML.",
+            "content": {
+              "text/html": { "schema": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
+    "/latest/archive": {
+      "get": {
+        "tags": ["Latest"],
+        "summary": "Serve the complete news archive",
+        "responses": {
+          "200": {
+            "description": "News archive HTML.",
+            "content": {
+              "text/html": { "schema": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
+    "/latest/index.json": {
+      "get": {
+        "tags": ["Latest"],
+        "summary": "Serve the news search/index JSON",
+        "responses": {
+          "200": {
+            "description": "Search index generated from news posts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/NewsIndexItem" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/.well-known/webfinger": {
+      "get": {
+        "tags": ["Federation"],
+        "summary": "WebFinger lookup for local actors",
+        "parameters": [
+          {
+            "name": "resource",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^acct:[^@]+@.+$"
+            },
+            "description": "Account resource, for example `acct:video@ghostmaxxing.vecna.eu`."
+          },
+          {
+            "name": "Accept",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string" },
+            "example": "application/jrd+json"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "JRD WebFinger response.",
+            "content": {
+              "application/jrd+json": {
+                "schema": { "$ref": "#/components/schemas/WebFingerResponse" }
+              },
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/WebFingerResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/federation/actors/{handle}": {
+      "get": {
+        "tags": ["Federation"],
+        "summary": "Serve a local ActivityPub actor",
+        "parameters": [
+          { "$ref": "#/components/parameters/ServableActorHandle" },
+          {
+            "name": "Accept",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string" },
+            "example": "application/activity+json"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ActivityPub Person actor JSON-LD.",
+            "content": {
+              "application/activity+json": {
+                "schema": { "$ref": "#/components/schemas/ActivityPubActor" }
+              },
+              "application/ld+json": {
+                "schema": { "$ref": "#/components/schemas/ActivityPubActor" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/federation/actors/{handle}/followers": {
+      "get": {
+        "tags": ["Federation"],
+        "summary": "Serve an actor followers collection",
+        "parameters": [
+          { "$ref": "#/components/parameters/ServableActorHandle" }
+        ],
+        "responses": {
+          "200": {
+            "description": "ActivityPub followers collection.",
+            "content": {
+              "application/activity+json": {
+                "schema": { "$ref": "#/components/schemas/ActivityPubCollection" }
+              },
+              "application/ld+json": {
+                "schema": { "$ref": "#/components/schemas/ActivityPubCollection" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/federation/actors/{handle}/inbox": {
+      "post": {
+        "tags": ["Federation"],
+        "summary": "Receive ActivityPub inbox activity for one local actor",
+        "parameters": [
+          { "$ref": "#/components/parameters/ServableActorHandle" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/activity+json": {
+              "schema": { "$ref": "#/components/schemas/ActivityPubObject" }
+            },
+            "application/ld+json": {
+              "schema": { "$ref": "#/components/schemas/ActivityPubObject" }
+            }
+          }
+        },
+        "responses": {
+          "202": { "description": "Activity accepted by Fedify for processing." },
+          "200": { "description": "Activity processed by Fedify." },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/federation/inbox": {
+      "post": {
+        "tags": ["Federation"],
+        "summary": "Receive ActivityPub shared inbox activity",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/activity+json": {
+              "schema": { "$ref": "#/components/schemas/ActivityPubObject" }
+            },
+            "application/ld+json": {
+              "schema": { "$ref": "#/components/schemas/ActivityPubObject" }
+            }
+          }
+        },
+        "responses": {
+          "202": { "description": "Activity accepted by Fedify for processing." },
+          "200": { "description": "Activity processed by Fedify." },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/static/{filename}": {
+      "get": {
+        "tags": ["Static media"],
+        "summary": "Serve a diagnostic static file from public/",
+        "parameters": [
+          { "$ref": "#/components/parameters/Filename" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Static diagnostic asset.",
+            "content": {
+              "application/json": { "schema": { "type": "object", "additionalProperties": true } },
+              "text/css": { "schema": { "type": "string" } },
+              "application/javascript": { "schema": { "type": "string" } },
+              "text/html": { "schema": { "type": "string" } },
+              "application/octet-stream": { "schema": { "type": "string", "contentEncoding": "base64" } }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/videos/{filename}": {
+      "get": {
+        "tags": ["Static media"],
+        "summary": "Serve approved video media",
+        "parameters": [
+          { "$ref": "#/components/parameters/Filename" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Approved video file.",
+            "content": {
+              "video/mp4": { "schema": { "type": "string", "contentEncoding": "base64" } },
+              "video/webm": { "schema": { "type": "string", "contentEncoding": "base64" } },
+              "video/ogg": { "schema": { "type": "string", "contentEncoding": "base64" } }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/clipboard/{filename}": {
+      "get": {
+        "tags": ["Static media"],
+        "summary": "Serve approved clipboard image media",
+        "parameters": [
+          { "$ref": "#/components/parameters/Filename" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Approved clipboard image file.",
+            "content": {
+              "image/png": { "schema": { "type": "string", "contentEncoding": "base64" } },
+              "image/jpeg": { "schema": { "type": "string", "contentEncoding": "base64" } }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/thumbnails/{filename}": {
+      "get": {
+        "tags": ["Static media"],
+        "summary": "Serve generated video thumbnail media",
+        "parameters": [
+          { "$ref": "#/components/parameters/Filename" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Generated thumbnail image file.",
+            "content": {
+              "image/png": { "schema": { "type": "string", "contentEncoding": "base64" } },
+              "image/jpeg": { "schema": { "type": "string", "contentEncoding": "base64" } }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "postBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Bearer token from LAB_POST_TOKEN. If LAB_POST_TOKEN is empty, the backend skips this check."
+      },
+      "adminBasic": {
+        "type": "http",
+        "scheme": "basic",
+        "description": "HTTP Basic Auth using GSTMXX_ADMIN_USER and GSTMXX_ADMIN_PASS."
+      }
+    },
+    "parameters": {
+      "PostId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/Uuid" }
+      },
+      "PostIdNamedPostId": {
+        "name": "postId",
+        "in": "path",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/Uuid" }
+      },
+      "UploadId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/Uuid" }
+      },
+      "RawActorHandle": {
+        "name": "handle",
+        "in": "path",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/RawActor" }
+      },
+      "ServableActorHandle": {
+        "name": "handle",
+        "in": "path",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/ServableActor" }
+      },
+      "DeleteTokenHeader": {
+        "name": "X-Delete-Token",
+        "in": "header",
+        "required": true,
+        "schema": { "type": "string", "minLength": 1 },
+        "description": "Opaque delete token returned by POST /api/uploads."
+      },
+      "Filename": {
+        "name": "filename",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^/]+$"
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Bad request.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "BearerRequired": {
+        "description": "A valid LAB_POST_TOKEN bearer token is required.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "BasicAuthRequired": {
+        "description": "HTTP Basic Auth is required.",
+        "headers": {
+          "WWW-Authenticate": {
+            "schema": { "type": "string" }
+          }
+        },
+        "content": {
+          "text/plain": {
+            "schema": { "type": "string" }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Forbidden.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "Gone": {
+        "description": "Resource was already removed.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "PayloadTooLarge": {
+        "description": "Uploaded payload exceeded the configured multer limit.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "TooManyRequests": {
+        "description": "Per-IP upload rate limit exceeded.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Unexpected server error.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Uuid": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "Url": {
+        "type": "string",
+        "format": "uri"
+      },
+      "IsoDateTime": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "RawActor": {
+        "type": "string",
+        "enum": ["video", "ghostyles", "news", "clipboard"]
+      },
+      "ServableActor": {
+        "type": "string",
+        "description": "A raw actor or enabled filter actor handle.",
+        "examples": ["video", "ghostyles", "news", "clipboard", "ghostyles-pictures", "ghostyles-daily"]
+      },
+      "UploadKind": {
+        "type": "string",
+        "enum": ["video", "clipboard"]
+      },
+      "MediaClass": {
+        "type": "string",
+        "enum": ["pictures", "videos"]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": ["ok", "message"],
+        "properties": {
+          "ok": { "const": false },
+          "message": { "type": "string" }
+        },
+        "additionalProperties": true
+      },
+      "MessageResponse": {
+        "type": "object",
+        "required": ["ok", "message"],
+        "properties": {
+          "ok": { "const": true },
+          "message": { "type": "string" }
+        },
+        "additionalProperties": true
+      },
+      "DeliveryResult": {
+        "type": ["object", "null"],
+        "properties": {
+          "followers": { "type": "integer", "minimum": 0 },
+          "skipped": { "type": "boolean" },
+          "error": { "type": "string" }
+        },
+        "additionalProperties": true
+      },
+      "EchoResult": {
+        "type": "object",
+        "properties": {
+          "handle": { "type": "string" },
+          "followers": { "type": "integer", "minimum": 0 },
+          "error": { "type": "string" }
+        },
+        "additionalProperties": true
+      },
+      "Attachment": {
+        "type": "object",
+        "required": ["type", "url", "mediaType", "name"],
+        "properties": {
+          "type": { "type": "string", "enum": ["Image", "Video"] },
+          "url": { "$ref": "#/components/schemas/Url" },
+          "mediaType": { "type": "string" },
+          "name": { "type": "string" },
+          "thumbnailUrl": { "$ref": "#/components/schemas/Url" }
+        },
+        "additionalProperties": true
+      },
+      "ImageAttachmentInput": {
+        "type": "object",
+        "required": ["type", "url", "mediaType", "name"],
+        "properties": {
+          "type": { "const": "Image" },
+          "url": { "$ref": "#/components/schemas/Url" },
+          "mediaType": {
+            "type": "string",
+            "pattern": "^image/"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Alt text / accessible image description."
+          }
+        },
+        "additionalProperties": false
+      },
+      "Post": {
+        "type": "object",
+        "required": ["id", "type", "actor", "content", "createdAt", "likes", "url"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "type": { "type": "string", "default": "Note" },
+          "actor": { "type": "string" },
+          "content": { "type": "string" },
+          "createdAt": { "$ref": "#/components/schemas/IsoDateTime" },
+          "media": { "$ref": "#/components/schemas/MediaClass" },
+          "likes": { "type": "integer", "minimum": 0 },
+          "attachment": { "$ref": "#/components/schemas/Attachment" },
+          "quoteUrl": { "$ref": "#/components/schemas/Url" },
+          "quoteAuthorizationUrl": { "$ref": "#/components/schemas/Url" },
+          "title": { "type": "string" },
+          "subtitle": { "type": "string" },
+          "url": { "$ref": "#/components/schemas/Url" }
+        },
+        "additionalProperties": true
+      },
+      "PostSummary": {
+        "type": "object",
+        "required": ["id", "url"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "url": { "$ref": "#/components/schemas/Url" }
+        },
+        "additionalProperties": true
+      },
+      "ConfigResponse": {
+        "type": "object",
+        "required": ["ok", "configuredBaseUrl", "browserOrigin", "originMatches", "actors", "postAuthRequired", "realFederationReady"],
+        "properties": {
+          "ok": { "const": true },
+          "configuredBaseUrl": { "$ref": "#/components/schemas/Url" },
+          "browserOrigin": { "$ref": "#/components/schemas/Url" },
+          "originMatches": { "type": "boolean" },
+          "actors": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/RawActor" }
+          },
+          "postAuthRequired": { "type": "boolean" },
+          "realFederationReady": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      },
+      "HealthResponse": {
+        "type": "object",
+        "required": ["ok", "baseUrl", "actors", "filters"],
+        "properties": {
+          "ok": { "const": true },
+          "baseUrl": { "$ref": "#/components/schemas/Url" },
+          "actors": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/RawActor" }
+          },
+          "filters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["handle", "mode"],
+              "properties": {
+                "handle": { "type": "string" },
+                "mode": { "type": "string", "enum": ["echo", "digest"] }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "FollowerRow": {
+        "type": "object",
+        "required": ["actorId", "inboxUrl", "createdAt"],
+        "properties": {
+          "actorId": { "$ref": "#/components/schemas/Url" },
+          "inboxUrl": { "$ref": "#/components/schemas/Url" },
+          "createdAt": { "$ref": "#/components/schemas/IsoDateTime" }
+        },
+        "additionalProperties": true
+      },
+      "FollowersResponse": {
+        "type": "object",
+        "required": ["ok", "followers"],
+        "properties": {
+          "ok": { "const": true },
+          "followers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": { "$ref": "#/components/schemas/FollowerRow" }
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "UploadRequest": {
+        "type": "object",
+        "required": ["video", "consent_version"],
+        "properties": {
+          "video": {
+            "type": "string",
+            "contentEncoding": "base64",
+            "description": "Video file or clipboard PNG. Accepted MIME types: video/mp4, video/webm, video/ogg, image/png."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/UploadKind",
+            "default": "video"
+          },
+          "consent_version": { "type": "string", "minLength": 1 },
+          "ghostyle_id": { "type": "string" },
+          "app_version": { "type": "string" },
+          "user_note": { "type": "string" },
+          "metrics_json": { "type": "string" }
+        },
+        "additionalProperties": true
+      },
+      "UploadCreatedResponse": {
+        "type": "object",
+        "required": ["ok", "uploadId", "deleteToken", "message"],
+        "properties": {
+          "ok": { "const": true },
+          "uploadId": { "$ref": "#/components/schemas/Uuid" },
+          "deleteToken": { "type": "string" },
+          "message": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "DeleteUploadResponse": {
+        "type": "object",
+        "required": ["ok", "message", "removedFiles", "federation"],
+        "properties": {
+          "ok": { "const": true },
+          "message": { "type": "string" },
+          "removedFiles": { "type": "integer", "minimum": 0 },
+          "federation": { "$ref": "#/components/schemas/DeliveryResult" }
+        },
+        "additionalProperties": false
+      },
+      "PendingUpload": {
+        "type": "object",
+        "required": ["id", "kind", "consentVersion", "createdAt", "mediaUrl"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "kind": { "$ref": "#/components/schemas/UploadKind" },
+          "consentVersion": { "type": "string" },
+          "ghostyleId": { "type": ["string", "null"] },
+          "appVersion": { "type": ["string", "null"] },
+          "userNote": { "type": ["string", "null"] },
+          "createdAt": { "$ref": "#/components/schemas/IsoDateTime" },
+          "mediaUrl": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "PendingUploadsResponse": {
+        "type": "object",
+        "required": ["ok", "pending"],
+        "properties": {
+          "ok": { "const": true },
+          "pending": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/PendingUpload" }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApproveUploadResponse": {
+        "type": "object",
+        "required": ["ok", "message", "kind", "actor", "post", "media", "publicUrl"],
+        "properties": {
+          "ok": { "const": true },
+          "message": { "type": "string" },
+          "kind": { "$ref": "#/components/schemas/UploadKind" },
+          "actor": { "type": "string" },
+          "post": { "$ref": "#/components/schemas/PostSummary" },
+          "media": { "type": "string" },
+          "thumbnail": { "type": ["string", "null"] },
+          "publicUrl": { "$ref": "#/components/schemas/Url" },
+          "moderatedAt": { "$ref": "#/components/schemas/IsoDateTime" },
+          "federation": { "$ref": "#/components/schemas/DeliveryResult" },
+          "echoes": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/EchoResult" }
+          }
+        },
+        "additionalProperties": true
+      },
+      "ComposeRequest": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/RawActor",
+            "default": "news"
+          },
+          "title": { "type": "string", "minLength": 1 },
+          "subtitle": { "type": "string" },
+          "content": { "type": "string" },
+          "altText": { "type": "string" },
+          "image": {
+            "type": "string",
+            "contentEncoding": "base64",
+            "description": "Optional PNG or JPEG image, maximum 10 MB."
+          }
+        },
+        "additionalProperties": true
+      },
+      "ComposeResponse": {
+        "type": "object",
+        "required": ["ok", "message", "actor", "post"],
+        "properties": {
+          "ok": { "const": true },
+          "message": { "type": "string" },
+          "actor": { "$ref": "#/components/schemas/RawActor" },
+          "post": { "$ref": "#/components/schemas/PostSummary" },
+          "federation": { "$ref": "#/components/schemas/DeliveryResult" },
+          "echoes": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/EchoResult" }
+          }
+        },
+        "additionalProperties": true
+      },
+      "CreatePostRequest": {
+        "type": "object",
+        "required": ["content"],
+        "properties": {
+          "content": { "type": "string", "minLength": 1 },
+          "actor": {
+            "$ref": "#/components/schemas/RawActor",
+            "default": "video"
+          },
+          "publish": {
+            "type": "boolean",
+            "default": false
+          },
+          "attachment": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/ImageAttachmentInput" },
+              { "type": "null" }
+            ]
+          },
+          "quoteUrl": { "$ref": "#/components/schemas/Url" }
+        },
+        "additionalProperties": false
+      },
+      "CreatePostResponse": {
+        "type": "object",
+        "required": ["ok", "post", "published", "delivery"],
+        "properties": {
+          "ok": { "const": true },
+          "post": { "$ref": "#/components/schemas/Post" },
+          "published": { "type": "boolean" },
+          "delivery": { "$ref": "#/components/schemas/DeliveryResult" }
+        },
+        "additionalProperties": false
+      },
+      "PostResponse": {
+        "type": "object",
+        "required": ["ok", "post"],
+        "properties": {
+          "ok": { "const": true },
+          "post": { "$ref": "#/components/schemas/Post" }
+        },
+        "additionalProperties": false
+      },
+      "PostListResponse": {
+        "type": "object",
+        "required": ["ok", "posts"],
+        "properties": {
+          "ok": { "const": true },
+          "posts": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Post" }
+          }
+        },
+        "additionalProperties": false
+      },
+      "AnnouncePostResponse": {
+        "type": "object",
+        "required": ["ok", "post", "published", "delivery"],
+        "properties": {
+          "ok": { "const": true },
+          "post": { "$ref": "#/components/schemas/Post" },
+          "published": { "const": true },
+          "delivery": { "$ref": "#/components/schemas/DeliveryResult" }
+        },
+        "additionalProperties": false
+      },
+      "RunDigestsRequest": {
+        "type": "object",
+        "properties": {
+          "force": { "type": "boolean", "default": false },
+          "now": {
+            "description": "Optional timestamp understood by JavaScript Date.",
+            "oneOf": [
+              { "$ref": "#/components/schemas/IsoDateTime" },
+              { "type": "string" }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "DigestRunResult": {
+        "type": "object",
+        "required": ["handle"],
+        "properties": {
+          "handle": { "type": "string" },
+          "picked": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/Uuid" },
+              { "type": "null" }
+            ]
+          },
+          "postId": { "$ref": "#/components/schemas/Uuid" },
+          "followers": { "type": "integer", "minimum": 0 },
+          "summary": { "type": "string" },
+          "error": { "type": "string" }
+        },
+        "additionalProperties": true
+      },
+      "RunDigestsResponse": {
+        "type": "object",
+        "required": ["ok", "ran", "results"],
+        "properties": {
+          "ok": { "const": true },
+          "ran": { "type": "integer", "minimum": 0 },
+          "results": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/DigestRunResult" }
+          }
+        },
+        "additionalProperties": false
+      },
+      "StaticAnnounceResponse": {
+        "type": "object",
+        "required": ["ok", "actor", "object", "followers"],
+        "properties": {
+          "ok": { "const": true },
+          "actor": { "$ref": "#/components/schemas/RawActor" },
+          "object": { "$ref": "#/components/schemas/Url" },
+          "followers": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": false
+      },
+      "NewsIndexItem": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "url": { "$ref": "#/components/schemas/Url" },
+          "title": { "type": "string" },
+          "subtitle": { "type": "string" },
+          "createdAt": { "$ref": "#/components/schemas/IsoDateTime" },
+          "readingTimeMinutes": { "type": "integer", "minimum": 1 },
+          "searchText": { "type": "string" }
+        },
+        "additionalProperties": true
+      },
+      "WebFingerResponse": {
+        "type": "object",
+        "required": ["subject", "links"],
+        "properties": {
+          "subject": { "type": "string" },
+          "aliases": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Url" }
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "rel": { "type": "string" },
+                "type": { "type": "string" },
+                "href": { "$ref": "#/components/schemas/Url" }
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        "additionalProperties": true
+      },
+      "ActivityPubObject": {
+        "type": "object",
+        "properties": {
+          "@context": {},
+          "id": { "$ref": "#/components/schemas/Url" },
+          "type": { "type": "string" }
+        },
+        "additionalProperties": true
+      },
+      "ActivityPubActor": {
+        "allOf": [
+          { "$ref": "#/components/schemas/ActivityPubObject" },
+          {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string", "enum": ["Person"] },
+              "preferredUsername": { "type": "string" },
+              "name": { "type": "string" },
+              "summary": { "type": "string" },
+              "inbox": { "$ref": "#/components/schemas/Url" },
+              "followers": { "$ref": "#/components/schemas/Url" },
+              "publicKey": { "type": "object", "additionalProperties": true },
+              "endpoints": { "type": "object", "additionalProperties": true }
+            },
+            "additionalProperties": true
+          }
+        ]
+      },
+      "ActivityPubCollection": {
+        "allOf": [
+          { "$ref": "#/components/schemas/ActivityPubObject" },
+          {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string" },
+              "items": {
+                "type": "array",
+                "items": {}
+              },
+              "orderedItems": {
+                "type": "array",
+                "items": {}
+              },
+              "totalItems": { "type": "integer", "minimum": 0 }
+            },
+            "additionalProperties": true
+          }
+        ]
+      },
+      "QuoteAuthorization": {
+        "type": "object",
+        "required": ["@context", "id", "type", "attributedTo", "interactingObject", "interactionTarget"],
+        "properties": {
+          "@context": {},
+          "id": { "$ref": "#/components/schemas/Url" },
+          "type": { "const": "QuoteAuthorization" },
+          "attributedTo": { "$ref": "#/components/schemas/Url" },
+          "interactingObject": { "$ref": "#/components/schemas/Url" },
+          "interactionTarget": { "$ref": "#/components/schemas/Url" }
+        },
+        "additionalProperties": true
+      }
+    }
+  }
+}

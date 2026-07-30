@@ -244,6 +244,7 @@ operator
 │   ├── /videos /clipboard /thumbnails -> storage/
 │   ├── /posts /federation/actors -> cached proxy to server.js
 │   ├── /api /feed /.well-known /federation -> proxy to server.js
+│   │   └── /api/docs and /api/openapi.json are covered here
 │   └── / -> deployed static client
 └── .gitignore
 ```
@@ -292,6 +293,8 @@ repository docs and fixtures
 ├── README.md
 ├── tutorials/operations.md
 │   └── operator reference for env, backups, interfaces
+├── tutorials/openapi.json
+│   └── served by server.js at /api/openapi.json and displayed at /api/docs
 ├── TESTING.md
 │   └── historical testing guide; informative but stale against package.json
 ├── ASSESSMENT.md
@@ -301,9 +304,9 @@ repository docs and fixtures
     └── quote-post.json -> POST /api/posts quote payload shape
 ```
 
-These files are not runtime dependencies. `tutorials/operations.md` is still
+These files are not runtime dependencies, except that `tutorials/openapi.json`
+is served read-only by the API docs route. `tutorials/operations.md` is still
 operator documentation. `TESTING.md` and `ASSESSMENT.md` have historical value,
 but their claims should be checked against the current code before being used as
 runbooks. The example payloads remain useful references for the manual control
 API.
-
