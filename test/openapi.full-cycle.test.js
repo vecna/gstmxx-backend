@@ -14,15 +14,22 @@ const { runStep7 } = require("./openapi-cycle/step7-news-propagation.js");
 const { runStep8 } = require("./openapi-cycle/step8-aggregation-and-federation.js");
 const { runStep9 } = require("./openapi-cycle/step9-cleanup.js");
 const { runStep10 } = require("./openapi-cycle/step10-empty-check.js");
+const { createFetchTraceLogger } = require("./openapi-cycle/traceLogger.js");
 
 const cycle = createCycleHarness();
+let restoreFetchTrace = () => {};
 
 before(async () => {
+  const traceLogger = createFetchTraceLogger({
+    enabled: process.env.GSTMXX_CYCLE_TRACE !== "0"
+  });
+  restoreFetchTrace = traceLogger.install();
   await cycle.startServer();
 });
 
 after(async () => {
   await cycle.stopServer();
+  restoreFetchTrace();
   cycle.cleanup();
 });
 
