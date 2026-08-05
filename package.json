@@ -4,8 +4,8 @@
   "private": true,
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js",
+    "start": "node --env-file-if-exists=env server.js",
+    "dev": "node --watch --env-file-if-exists=env server.js",
     "debug": "DEBUG=gstmxx:flow,gstmxx:http,gstmxx:store,gstmxx:activitypub node --env-file-if-exists=env server.js",
     "test": "node --test",
     "test:coverage": "c8 --reporter=text --reporter=text-summary --reporter=lcov node --test",

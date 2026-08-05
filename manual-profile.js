@@ -36,6 +36,7 @@ const VALUE_OPTIONS = new Map([
   ["--actor", "actor"],
   ["--server", "serverUrl"],
   ["--env-file", "envFile"],
+  ["--from-json", "fromJson"],
   ["--name", "displayName"],
   ["--bio", "bioText"],
   ["--bio-file", "bioFile"],
@@ -86,11 +87,12 @@ function argumentValue(argv, name) {
  * @returns {Object} Parsed options.
  */
 function parseArgs(argv) {
-  const options = { actor: "video", fields: [] };
+  const options = { actor: "video", actorGiven: false, fields: [] };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (VALUE_OPTIONS.has(argument)) {
       options[VALUE_OPTIONS.get(argument)] = takeValue(argv, index);
+      if (argument === "--actor") options.actorGiven = true;
       index += 1;
     } else if (argument === "--field") {
       const raw = takeValue(argv, index);
@@ -117,6 +119,12 @@ function parseArgs(argv) {
 function usage() {
   console.log(`Usage:
   node manual-profile.js --actor NAME [options]
+
+Declarative:
+  --from-json PATH       Apply a profile file (see fedi-profile.example.json).
+                         Every actor in it is applied unless --actor narrows it
+                         to one. File paths inside the JSON are resolved
+                         relative to the JSON file, so keep images next to it.
 
 Read:
   --show                 Print the stored profile and exit
@@ -160,6 +168,8 @@ Environment:
   LAB_POST_TOKEN         Bearer token, same one manual-add-post.js uses
 
 Examples:
+  node manual-profile.js --from-json fedi-profile.json --publish
+  node manual-profile.js --from-json fedi-profile.json --actor video --publish
   node manual-profile.js --actor video --show
   node manual-profile.js --actor video --name "Ghostmaxxing / video" \\
     --bio-file ./bio.txt --field "Lab=https://ghostmaxxing.vecna.eu/lab.html" \\
@@ -224,6 +234,161 @@ function buildPatch(options) {
   return Object.keys(patch).length ? patch : null;
 }
 
+/**
+ * Read a profile file and normalise it into `{ handle: spec }`.
+ *
+ * Accepts either `{ "actors": { "video": {...} } }` or a bare single-actor
+ * object, so a one-actor setup does not need the extra nesting. Relative image
+ * paths are resolved against the file's own directory: the file and the images
+ * travel together.
+ *
+ * @param {string} filePath
+ * @param {string} [onlyActor] - Narrow to one handle.
+ * @returns {Array<[string, Object]>}
+ */
+function readProfileFile(filePath, onlyActor) {
+  const resolved = path.resolve(filePath);
+  if (!fs.existsSync(resolved)) throw new Error(`No such file: ${resolved}`);
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(resolved, "utf8"));
+  } catch (error) {
+    throw new Error(`${resolved} is not valid JSON: ${error.message}`);
+  }
+  const baseDir = path.dirname(resolved);
+  const actors =
+    parsed && typeof parsed.actors === "object" && parsed.actors !== null
+      ? parsed.actors
+      : { [onlyActor || "video"]: parsed };
+
+  const entries = Object.entries(actors)
+    .filter(([handle]) => !onlyActor || handle === onlyActor)
+    .map(([handle, spec]) => [handle, { ...spec, __baseDir: baseDir }]);
+
+  if (!entries.length) {
+    throw new Error(
+      onlyActor
+        ? `${resolved} has no entry for actor "${onlyActor}".`
+        : `${resolved} defines no actors.`
+    );
+  }
+  return entries;
+}
+
+/**
+ * Translate one actor's JSON spec into the same shape `parseArgs` produces, so
+ * that both entry points share one code path from here on.
+ *
+ * @param {Object} spec
+ * @returns {Object}
+ */
+function optionsFromSpec(spec) {
+  const resolve = (value) =>
+    value == null ? undefined : path.resolve(spec.__baseDir || ".", value);
+  return {
+    displayName: spec.displayName,
+    bioText: spec.bio,
+    bioHtml: spec.bioHtml,
+    bioFile: spec.bioFile ? resolve(spec.bioFile) : undefined,
+    profileUrl: spec.url,
+    fields: Array.isArray(spec.fields) ? spec.fields : [],
+    avatarFile: spec.avatarFile ? resolve(spec.avatarFile) : undefined,
+    avatarUrl: spec.avatarUrl,
+    headerFile: spec.headerFile ? resolve(spec.headerFile) : undefined,
+    headerUrl: spec.headerUrl,
+    clearAvatar: spec.avatar === null || spec.avatarFile === null,
+    clearHeader: spec.header === null || spec.headerFile === null,
+    clearFields: spec.fields === null,
+    clearBio: spec.bio === null && spec.bioHtml == null && spec.bioFile == null,
+    notDiscoverable: spec.discoverable === false,
+    notIndexable: spec.indexable === false
+  };
+}
+
+/**
+ * Apply one actor's changes: clears, image uploads, the textual patch, then an
+ * optional `Update(Person)`.
+ *
+ * @returns {Promise<{ok:boolean, profile:Object|null}>}
+ */
+async function applyProfile(request, actorHandle, options, { publish, dryRun }) {
+  const actor = encodeURIComponent(actorHandle);
+  const patch = buildPatch(options);
+  const uploads = [];
+  if (options.avatarFile) uploads.push(["avatar", readImage(options.avatarFile)]);
+  if (options.headerFile) uploads.push(["header", readImage(options.headerFile)]);
+  const clears = [
+    options.clearAvatar && !options.avatarUrl ? "avatar" : null,
+    options.clearHeader && !options.headerUrl ? "header" : null
+  ].filter(Boolean);
+
+  if (!patch && !uploads.length && !clears.length && !publish) {
+    return { ok: false, profile: null, empty: true };
+  }
+
+  if (dryRun) {
+    console.log(
+      JSON.stringify(
+        {
+          dryRun: true,
+          actor: actorHandle,
+          patch,
+          uploads: uploads.map(([kind, image]) => ({
+            kind,
+            contentType: image.contentType,
+            bytes: image.bytes.length
+          })),
+          clears,
+          publish: Boolean(publish)
+        },
+        null,
+        2
+      )
+    );
+    return { ok: true, profile: null };
+  }
+
+  for (const kind of clears) {
+    await request(`/api/actors/${actor}/media/${kind}`, { method: "DELETE" });
+    console.log(`[${actorHandle}] removed ${kind}`);
+  }
+  for (const [kind, image] of uploads) {
+    const result = await request(`/api/actors/${actor}/media/${kind}`, {
+      method: "PUT",
+      body: image.bytes,
+      contentType: image.contentType
+    });
+    console.log(
+      `[${actorHandle}] uploaded ${kind}: ${result.media.file} (${result.media.bytes} bytes)`
+    );
+  }
+  let profile = null;
+  if (patch) {
+    profile = (
+      await request(`/api/actors/${actor}/profile`, { method: "PUT", json: patch })
+    ).profile;
+    console.log(`[${actorHandle}] profile stored`);
+  }
+  if (!profile) {
+    profile = (await request(`/api/actors/${actor}/profile`)).profile;
+  }
+
+  let ok = true;
+  if (publish) {
+    const result = await request(`/api/actors/${actor}/publish`, { method: "POST" });
+    const delivery = result.delivery || {};
+    console.log(
+      `[${actorHandle}] Update(Person) delivered to ${delivery.delivered ?? 0}/${delivery.followers ?? 0} followers`
+    );
+    if (delivery.error) console.warn(`[${actorHandle}] ${delivery.error}`);
+    for (const failure of delivery.failures || []) {
+      console.warn(`[${actorHandle}]   ${failure.inbox}: ${failure.error}`);
+    }
+    ok = Boolean(result.ok);
+  }
+  return { ok, profile };
+}
+
 async function main(argv = process.argv.slice(2)) {
   loadEnvFile(
     argumentValue(argv, "--env-file") ||
@@ -260,89 +425,49 @@ async function main(argv = process.argv.slice(2)) {
       return;
     }
 
-    const patch = buildPatch(options);
-    const uploads = [];
-    if (options.avatarFile) uploads.push(["avatar", readImage(options.avatarFile)]);
-    if (options.headerFile) uploads.push(["header", readImage(options.headerFile)]);
-    const clears = [
-      options.clearAvatar && !options.avatarUrl ? "avatar" : null,
-      options.clearHeader && !options.headerUrl ? "header" : null
-    ].filter(Boolean);
+    // Declarative path: one file drives every actor. Same code below.
+    if (options.fromJson) {
+      const entries = readProfileFile(options.fromJson, options.actorGiven ? options.actor : null);
+      let allOk = true;
+      for (const [handle, spec] of entries) {
+        const result = await applyProfile(
+          request,
+          handle,
+          optionsFromSpec(spec),
+          { publish: options.publish, dryRun: options.dryRun }
+        );
+        if (result.empty) {
+          console.warn(`[${handle}] nothing to apply`);
+        }
+        if (!result.ok && !result.empty) allOk = false;
+      }
+      if (!options.publish && !options.dryRun) {
+        console.log(
+          "\nStored locally. Add --publish to push Update(Person) to the followers."
+        );
+      }
+      if (!allOk) process.exitCode = 3;
+      return;
+    }
 
-    if (!patch && !uploads.length && !clears.length && !options.publish) {
+    const result = await applyProfile(request, options.actor, options, {
+      publish: options.publish,
+      dryRun: options.dryRun
+    });
+    if (result.empty) {
       console.error(
-        "Nothing to do. Pass --show, or one of --name/--bio*/--field/--avatar-*/--header-*, or --publish."
+        "Nothing to do. Pass --show, --from-json, or one of --name/--bio*/--field/--avatar-*/--header-*, or --publish."
       );
       process.exitCode = 2;
       return;
     }
-
-    if (options.dryRun) {
-      console.log(
-        JSON.stringify(
-          {
-            dryRun: true,
-            server,
-            actor: options.actor,
-            patch,
-            uploads: uploads.map(([kind, image]) => ({
-              kind,
-              contentType: image.contentType,
-              bytes: image.bytes.length
-            })),
-            clears,
-            publish: Boolean(options.publish)
-          },
-          null,
-          2
-        )
-      );
-      return;
-    }
-
-    for (const kind of clears) {
-      await request(`/api/actors/${actor}/media/${kind}`, { method: "DELETE" });
-      console.log(`Removed ${kind}.`);
-    }
-    for (const [kind, image] of uploads) {
-      const result = await request(`/api/actors/${actor}/media/${kind}`, {
-        method: "PUT",
-        body: image.bytes,
-        contentType: image.contentType
-      });
-      console.log(`Uploaded ${kind}: ${result.media.file} (${result.media.bytes} bytes)`);
-    }
-    let profile = null;
-    if (patch) {
-      const result = await request(`/api/actors/${actor}/profile`, {
-        method: "PUT",
-        json: patch
-      });
-      profile = result.profile;
-    }
-    if (!profile) {
-      profile = (await request(`/api/actors/${actor}/profile`)).profile;
-    }
-    console.log(JSON.stringify(profile, null, 2));
-
-    if (options.publish) {
-      const result = await request(`/api/actors/${actor}/publish`, {
-        method: "POST"
-      });
-      const delivery = result.delivery || {};
-      console.log(
-        `Update(Person) delivered to ${delivery.delivered ?? 0}/${delivery.followers ?? 0} followers.`
-      );
-      if (delivery.error) console.warn(`Delivery problem: ${delivery.error}`);
-      for (const failure of delivery.failures || []) {
-        console.warn(`  ${failure.inbox}: ${failure.error}`);
-      }
-      if (!result.ok) process.exitCode = 3;
-    } else {
+    if (result.profile) console.log(JSON.stringify(result.profile, null, 2));
+    if (!options.publish && !options.dryRun) {
       console.log(
         "Stored locally. Add --publish to push Update(Person) to the followers."
       );
     }
+    if (!result.ok) process.exitCode = 3;
   } catch (error) {
     console.error(`Could not update the profile:\n${error.message}`);
     process.exitCode = 1;
@@ -351,4 +476,4 @@ async function main(argv = process.argv.slice(2)) {
 
 if (require.main === module) main();
 
-module.exports = { main, parseArgs, buildPatch };
+module.exports = { main, parseArgs, buildPatch, readProfileFile, optionsFromSpec };

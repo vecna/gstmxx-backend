@@ -1,0 +1,93 @@
+{
+  "_comment": [
+    "Every customisation the profile CLI supports, for all four content actors",
+    "plus one filter actor. Apply with:",
+    "",
+    "    npm run profile -- --from-json fedi-profile.json --publish",
+    "",
+    "or one actor at a time:",
+    "",
+    "    npm run profile -- --from-json fedi-profile.json --actor video --publish",
+    "",
+    "Image paths are resolved relative to THIS file, so keep fedi-images/ next",
+    "to it. Images must be PNG, JPEG, WebP or GIF and under 2 MB — Mastodon",
+    "rejects SVG avatars and headers, so export a raster version of the mark.",
+    "",
+    "Recommended sizes: avatar 400x400 (square, it is cropped to a circle),",
+    "header 1500x500 (Mastodon crops to roughly 3:1 and to a shorter strip on",
+    "mobile, so keep anything important away from the edges).",
+    "",
+    "Without --publish the profile is stored but no remote server is told.",
+    "Remove a key to leave it untouched; set it to null to clear it."
+  ],
+
+  "actors": {
+    "video": {
+      "displayName": "Ghostmaxxing / video",
+
+      "bio": "Face-recognition camouflage, tested in the open.\n\nEvery experiment runs locally in your browser: point a camera, change how your face looks, watch a recognition pipeline react. Nothing is uploaded.\n\nThis account posts the video experiments. https://ghostmaxxing.vecna.eu/lab.html",
+
+      "url": "https://ghostmaxxing.vecna.eu/",
+
+      "fields": [
+        { "name": "Lab", "value": "https://ghostmaxxing.vecna.eu/lab.html" },
+        { "name": "Research", "value": "https://ghostmaxxing.vecna.eu/references/" },
+        { "name": "Code", "value": "https://github.com/vecna/ghostmaxxing" },
+        { "name": "Leaks", "value": "https://ghostmaxxing.vecna.eu/report.html" }
+      ],
+
+      "avatarFile": "fedi-images/video-avatar.png",
+      "headerFile": "fedi-images/video-header.jpg",
+
+      "discoverable": true,
+      "indexable": true
+    },
+
+    "ghostyles": {
+      "displayName": "Ghostmaxxing / ghostyles",
+      "bioHtml": "<p>Looks that break the read. Each <strong>ghostyle</strong> is a documented attempt at disrupting face recognition — with the conditions it was tested under, not a promise it holds anywhere.</p><p>Submissions welcome via <a href=\"https://ghostmaxxing.vecna.eu/report.html\">the lab</a>.</p>",
+      "url": "https://ghostmaxxing.vecna.eu/",
+      "fields": [
+        { "name": "Workshops", "value": "https://ghostmaxxing.vecna.eu/workshops.html" },
+        { "name": "Docs", "value": "https://ghostmaxxing.vecna.eu/docs" }
+      ],
+      "avatarFile": "fedi-images/ghostyles-avatar.png",
+      "headerFile": "fedi-images/ghostyles-header.jpg"
+    },
+
+    "news": {
+      "displayName": "Ghostmaxxing / news",
+      "bioFile": "fedi-images/news-bio.txt",
+      "url": "https://ghostmaxxing.vecna.eu/",
+      "fields": [
+        { "name": "Site", "value": "https://ghostmaxxing.vecna.eu" },
+        { "name": "Contact", "value": "mailto:hello@vecna.eu" },
+        { "name": "Language", "value": "English / Italiano" }
+      ],
+      "avatarFile": "fedi-images/news-avatar.png",
+      "headerUrl": "https://ghostmaxxing.vecna.eu/images/ghostmaxxing-homepage.webp"
+    },
+
+    "clipboard": {
+      "displayName": "Ghostmaxxing / clipboard",
+      "bio": "Stills, screenshots and fragments from the lab.",
+      "url": "https://ghostmaxxing.vecna.eu/",
+      "fields": [
+        { "name": "Lab", "value": "https://ghostmaxxing.vecna.eu/lab.html" }
+      ],
+      "avatarFile": "fedi-images/clipboard-avatar.png",
+      "indexable": false
+    },
+
+    "ghostyles-pictures": {
+      "displayName": "Ghostyles — pictures only",
+      "bio": "An automatic re-share of every approved picture from @ghostyles. No original posts here.",
+      "url": "https://ghostmaxxing.vecna.eu/",
+      "fields": [
+        { "name": "Source", "value": "https://ghostmaxxing.vecna.eu/federation/actors/ghostyles" }
+      ],
+      "avatarFile": "fedi-images/filter-avatar.png",
+      "discoverable": false
+    }
+  }
+}
