@@ -12,6 +12,8 @@
     "tunnel": "npx --yes @fedify/cli tunnel ${PORT:-4040}",
     "post": "node manual-add-post.js",
     "quote-picture": "node manual-quote-picture.js",
+    "profile": "node manual-profile.js",
+    "doctor": "node -e \"fetch(process.env.LAB_API_URL||'http://127.0.0.1:'+(process.env.PORT||4040)+'/healthz').then(r=>r.json()).then(j=>console.log(JSON.stringify(j,null,2)))\"",
     "c2p": "code2prompt --exclude node_modules --exclude .git --exclude .vscode --exclude .idea --exclude .husky --exclude .github --exclude .gitignore --exclude package-lock.json -O c2p-`date -I`.txt"
   },
   "engines": {
@@ -35,3 +37,4 @@
     "@opentelemetry/core": ">=2.8.0"
   }
 }
+

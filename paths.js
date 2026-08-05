@@ -40,6 +40,14 @@ const STORAGE_APPROVED_DIR = path.join(STORAGE_DIR, "approved");
 const STORAGE_THUMBNAILS_DIR = path.join(STORAGE_DIR, "thumbnails");
 
 /**
+ * Avatar and header images for the local actors. Content-addressed, immutable,
+ * and served through `/api/actors/:handle/media/:file` so that no extra nginx
+ * location is required. Back this up together with `data/`.
+ * @type {string}
+ */
+const STORAGE_PROFILE_DIR = path.join(STORAGE_DIR, "profile");
+
+/**
  * Directories that must exist before the server serves a request.
  * @type {ReadonlyArray<string>}
  */
@@ -49,7 +57,8 @@ const RUNTIME_DIRS = Object.freeze([
   UPLOADS_DIR,
   STORAGE_INCOMING_DIR,
   STORAGE_APPROVED_DIR,
-  STORAGE_THUMBNAILS_DIR
+  STORAGE_THUMBNAILS_DIR,
+  STORAGE_PROFILE_DIR
 ]);
 
 module.exports = {
@@ -61,11 +70,14 @@ module.exports = {
   STORAGE_INCOMING_DIR,
   STORAGE_APPROVED_DIR,
   STORAGE_THUMBNAILS_DIR,
+  STORAGE_PROFILE_DIR,
   RUNTIME_DIRS,
   /** Convenience bag of the three media dirs. */
   mediaDirs: Object.freeze({
     incoming: STORAGE_INCOMING_DIR,
     approved: STORAGE_APPROVED_DIR,
-    thumbnails: STORAGE_THUMBNAILS_DIR
+    thumbnails: STORAGE_THUMBNAILS_DIR,
+    profile: STORAGE_PROFILE_DIR
   })
 };
+

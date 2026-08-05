@@ -34,9 +34,11 @@ const {
   Like,
   Note,
   Person,
+  PropertyValue,
   PUBLIC_COLLECTION,
   Tombstone,
   Undo,
+  Update,
   Video,
   createFederation,
   exportJwk,
@@ -54,6 +56,9 @@ const { createUploadsRouter } = require("./routes/uploads.js");
 const { createAdminRouter } = require("./routes/admin.js");
 const { createFeedsRouter } = require("./routes/feeds.js");
 const { createLatestRouter } = require("./routes/latest.js");
+const { createProfileRouter } = require("./routes/profile.js");
+const { createProfileStore } = require("./profileStore.js");
+const originLib = require("./lib/origin.js");
 const news = require("./services/news.js");
 const xml = require("./services/xml.js");
 const preview = require("./services/preview.js");
@@ -70,8 +75,39 @@ const debugN = () => {};
 
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = parsePositiveInt(process.env.PORT, 4040);
+
+/**
+ * The public ActivityPub identity of this instance.
+ *
+ * This single string is stamped into every actor id, key id, activity id and
+ * object id we mint. It is NOT the address the process listens on and it is NOT
+ * the address the CLI talks to: it is the origin a *remote* server will dial
+ * back to verify our HTTP signatures. `GSTMXX_PUBLIC_URL` is the current name;
+ * `LAB_BASE_URL` is kept as an alias so existing deployments and tests do not
+ * break.
+ */
 const BASE_URL = normalizeBaseUrl(
-  process.env.LAB_BASE_URL || `http://127.0.0.1:${PORT}`
+  process.env.GSTMXX_PUBLIC_URL ||
+    process.env.LAB_BASE_URL ||
+    `http://127.0.0.1:${PORT}`
+);
+
+/**
+ * How the outside world sees {@link BASE_URL}: `private` means no remote server
+ * can fetch our keys, so signed delivery to any public inbox is doomed.
+ * @type {{origin:string, hostname:string, protocol:string, private:boolean,
+ *         insecure:boolean, federable:boolean}}
+ */
+const ORIGIN_INFO = originLib.classifyOrigin(BASE_URL);
+
+/** Escape hatch for LAN demos: silences the boot banner, changes nothing else. */
+const ALLOW_PRIVATE_ORIGIN = /^(1|true|yes|on)$/i.test(
+  process.env.GSTMXX_ALLOW_PRIVATE_ORIGIN || ""
+);
+
+/** Refuse to boot at all on a private origin. Off by default; on in production. */
+const STRICT_ORIGIN = /^(1|true|yes|on)$/i.test(
+  process.env.GSTMXX_STRICT_ORIGIN || ""
 );
 const { DATA_DIR, POST_DIR } = paths;
 const POST_TOKEN = process.env.LAB_POST_TOKEN || "big-oopsie";
@@ -305,6 +341,10 @@ function createStores(dataDir) {
   const keysPath = path.join(dataDir, "keys.json");
   const followersPath = path.join(dataDir, "followers.json");
   const kvPath = path.join(dataDir, "fedify-kv.json");
+  // Follows whose Accept could not be delivered yet. Without this file a
+  // transient failure leaves the remote side stuck on "pending authorization"
+  // forever, because nothing ever retries the Accept.
+  const pendingAcceptsPath = path.join(dataDir, "pending-accepts.json");
   if (!fs.existsSync(keysPath)) writeJson(keysPath, {});
   if (!fs.existsSync(followersPath)) writeJson(followersPath, {});
 
@@ -313,11 +353,20 @@ function createStores(dataDir) {
     readKeys: () => readJson(keysPath, {}),
     writeKeys: (value) => writeJson(keysPath, value),
     readFollowers: () => readJson(followersPath, {}),
-    writeFollowers: (value) => writeJson(followersPath, value)
+    writeFollowers: (value) => writeJson(followersPath, value),
+    readPendingAccepts: () => {
+      const value = readJson(pendingAcceptsPath, []);
+      return Array.isArray(value) ? value : [];
+    },
+    writePendingAccepts: (value) => writeJson(pendingAcceptsPath, value)
   };
 }
 
 const stores = createStores(DATA_DIR);
+const profileStore = createProfileStore({
+  dataDir: DATA_DIR,
+  mediaDir: paths.STORAGE_PROFILE_DIR
+});
 
 async function actorKeyPairs(handle) {
   debugS("actorKeyPairs: resolving key pairs for actor=%s", handle);
@@ -377,23 +426,93 @@ const federation = createFederation({
   }
 });
 
+/**
+ * Absolute URL of a stored profile image. The filename is content-addressed,
+ * so this URL changes whenever the bytes change — which is exactly what makes
+ * remote servers (that cache avatars by URL) pick the new image up.
+ *
+ * @param {string} handle
+ * @param {string} file
+ * @returns {string}
+ */
+function actorMediaUrl(handle, file) {
+  return new URL(
+    `/api/actors/${encodeURIComponent(handle)}/media/${encodeURIComponent(file)}`,
+    BASE_URL
+  ).href;
+}
+
+/**
+ * Resolve the stored avatar/header record into an absolute URL. A record may
+ * either reference locally stored bytes (`{ file, mediaType }`) or an external
+ * image (`{ url }`).
+ *
+ * @param {string} handle
+ * @param {Object|null|undefined} record
+ * @returns {{url:string, mediaType?:string}|null}
+ */
+function resolveProfileImage(handle, record) {
+  if (!record || typeof record !== "object") return null;
+  if (record.file) {
+    return { url: actorMediaUrl(handle, record.file), mediaType: record.mediaType };
+  }
+  if (record.url) return { url: record.url, mediaType: record.mediaType };
+  return null;
+}
+
+/**
+ * Build the `Person` document for a local actor.
+ *
+ * Shared by the actor dispatcher and by {@link publishProfileUpdate}, so that
+ * what a remote server fetches and what we push in an `Update` can never drift
+ * apart. Profile values (display name, biography, fields, avatar, header) come
+ * from {@link module:profileStore} and fall back to the built-in description.
+ *
+ * @param {Object} ctx - A Fedify context.
+ * @param {string} handle
+ * @returns {Promise<Person|null>}
+ */
+async function buildActorPerson(ctx, handle) {
+  if (!isServableActor(handle)) return null;
+  const keys = await ctx.getActorKeyPairs(handle);
+  const profile = profileStore.read(handle);
+  const avatar = resolveProfileImage(handle, profile.avatar);
+  const header = resolveProfileImage(handle, profile.header);
+  const fields = Array.isArray(profile.fields) ? profile.fields : [];
+
+  return new Person({
+    id: ctx.getActorUri(handle),
+    preferredUsername: handle,
+    name: profile.displayName || `Ghostmaxxing: ${handle}`,
+    summary: profile.summaryHtml || describeActor(handle),
+    // These four actors publish automatically; a follow must never wait for a
+    // human. Declaring it explicitly is what stops a client from rendering
+    // "pending authorization" while it waits for the Accept.
+    manuallyApprovesFollowers: false,
+    discoverable: profile.discoverable !== false,
+    indexable: profile.indexable !== false,
+    url: new URL(profile.url || "/", BASE_URL),
+    icon: avatar
+      ? new Image({ url: new URL(avatar.url), mediaType: avatar.mediaType })
+      : null,
+    image: header
+      ? new Image({ url: new URL(header.url), mediaType: header.mediaType })
+      : null,
+    attachments: fields.map(
+      (field) => new PropertyValue({ name: field.name, value: field.value })
+    ),
+    publicKey: keys[0]?.cryptographicKey,
+    assertionMethods: keys.map((key) => key.multikey),
+    inbox: ctx.getInboxUri(handle),
+    followers: ctx.getFollowersUri(handle),
+    endpoints: new Endpoints({ sharedInbox: ctx.getInboxUri() })
+  });
+}
+
 federation
   .setActorDispatcher("/federation/actors/{handle}", async (ctx, handle) => {
     debugS("setActorDispatcher: handling actor document request for handle=%s", handle);
-    if (!isServableActor(handle)) return null;
-    const keys = await ctx.getActorKeyPairs(handle);
-    debugN("setActorDispatcher: assembling Person actor payload for handle=%s", handle);
-    return new Person({
-      id: ctx.getActorUri(handle),
-      preferredUsername: handle,
-      name: `Ghostmaxxing: ${handle}`,
-      summary: describeActor(handle),
-      publicKey: keys[0]?.cryptographicKey,
-      assertionMethods: keys.map((key) => key.multikey),
-      inbox: ctx.getInboxUri(handle),
-      followers: ctx.getFollowersUri(handle),
-      endpoints: new Endpoints({ sharedInbox: ctx.getInboxUri() })
-    });
+    return buildActorPerson(ctx, handle);
   })
   .setKeyPairsDispatcher(async (_ctx, handle) => {
     debugS("setKeyPairsDispatcher: resolving keypairs for handle=%s", handle);
@@ -452,7 +571,19 @@ federation
       return;
     }
 
-    const follower = await activity.getActor(ctx);
+    let follower = null;
+    try {
+      follower = await activity.getActor(ctx);
+    } catch (error) {
+      // A dereference failure is transient (the remote may be down), so let it
+      // propagate: the sender will retry the Follow and we will try again.
+      event("activitypub", "follow.lookup_failed", {
+        recipient: handle,
+        actor: activity.actorId,
+        error
+      });
+      throw error;
+    }
     if (!follower?.id || !follower.inboxId) {
       event("activitypub", "follow.rejected", {
         recipient: handle,
@@ -474,24 +605,34 @@ federation
       actor: actorId
     });
 
-    const accept = new Accept({
-      id: new URL(
-        `/federation/activities/accept-${handle}-${Date.now()}`,
-        BASE_URL
-      ),
-      actor: ctx.getActorUri(handle),
-      object: activity
-    });
-    await ctx.sendActivity(
-      { identifier: handle },
-      [{ id: actorId, inboxId: inboxUrl }],
-      accept,
-      { immediate: true, preferSharedInbox: true }
-    );
-    event("activitypub", "follow.accepted", {
+    // Auto-accept. The Accept is what turns "pending authorization" into
+    // "following" on the remote side, so a failure here must never become a
+    // 500: the sender would just replay the Follow and the real cause would
+    // stay buried. Park it instead and let the retry loop own it.
+    const row = {
+      handle,
+      actorId: actorId.href,
+      inboxUrl: inboxUrl.href,
+      followId: activity.id ? activity.id.href : null,
+      followJson: await activity.toJsonLd().catch(() => null)
+    };
+    const outcome = await deliverAccept(ctx, row);
+    if (outcome.ok) {
+      dropPendingAccept(handle, actorId.href);
+      event("activitypub", "follow.accepted", {
+        recipient: handle,
+        actor: actorId,
+        deliveredTo: inboxUrl
+      });
+      return;
+    }
+    queuePendingAccept({ ...row, lastError: outcome.error });
+    event("activitypub", "follow.accept.deferred", {
       recipient: handle,
       actor: actorId,
-      deliveredTo: inboxUrl
+      deliveredTo: inboxUrl,
+      willRetry: true,
+      error: outcome.error
     });
   })
   .on(Like, async (ctx, activity) => {
@@ -518,12 +659,272 @@ federation
     }
     if (isServableActor(ctx.recipient) && activity.actorId) {
       deleteFollower(ctx.recipient, activity.actorId.href);
+      dropPendingAccept(ctx.recipient, activity.actorId.href);
       event("activitypub", "follow.removed", {
         recipient: ctx.recipient,
         actor: activity.actorId
       });
     }
   });
+
+/* ------------------------------------------------------------------------- *
+ * Outbound delivery: origin preflight, Accept retries
+ * ------------------------------------------------------------------------- */
+
+/** Give up on an Accept after roughly a day of doubling backoff. */
+const MAX_ACCEPT_ATTEMPTS = parsePositiveInt(
+  process.env.GSTMXX_ACCEPT_MAX_ATTEMPTS,
+  12
+);
+
+/**
+ * Exponential backoff for a deferred Accept: 30s, 1m, 2m ... capped at 6h.
+ * @param {number} attempts
+ * @returns {number} milliseconds
+ */
+function acceptBackoffMs(attempts) {
+  return Math.min(30_000 * 2 ** Math.max(0, attempts), 6 * 60 * 60 * 1000);
+}
+
+/**
+ * Refuse, up front, any signed delivery that cannot possibly be verified.
+ *
+ * When our own origin is private, the remote server has to dereference
+ * `<private-origin>/federation/actors/<handle>#main-key` to check the
+ * signature, and it will not dial a private address. Catching that here turns
+ * an opaque remote 401 into one actionable sentence, and stops us from
+ * repeatedly hammering someone else's inbox with unverifiable requests.
+ *
+ * @param {Iterable<string|URL>} inboxUrls
+ * @throws {Error} With `status = 503` when delivery is impossible.
+ * @returns {void}
+ */
+function assertDeliverable(inboxUrls) {
+  const blocked = originLib.undeliverableInboxes(BASE_URL, inboxUrls);
+  if (!blocked.length) return;
+  const error = new Error(originLib.explainPrivateOrigin(BASE_URL, blocked));
+  error.status = 503;
+  error.code = "PRIVATE_ORIGIN";
+  error.blockedInboxes = blocked;
+  throw error;
+}
+
+/**
+ * Send one Accept(Follow) to one inbox. Never throws.
+ *
+ * @param {Object} ctx - Any Fedify context.
+ * @param {{handle:string, actorId:string, inboxUrl:string, followId:?string,
+ *          followJson:?Object}} row
+ * @returns {Promise<{ok:boolean, error?:string, code?:string}>}
+ */
+async function deliverAccept(ctx, row) {
+  try {
+    assertDeliverable([row.inboxUrl]);
+    // Re-hydrating the original Follow keeps the Accept unambiguous: some
+    // servers match the follow request by the embedded object, not by id.
+    const follow = row.followJson
+      ? await Follow.fromJsonLd(row.followJson)
+      : new Follow({
+          id: row.followId ? new URL(row.followId) : null,
+          actor: new URL(row.actorId),
+          object: ctx.getActorUri(row.handle)
+        });
+    const accept = new Accept({
+      id: new URL(
+        `/federation/activities/accept-${row.handle}-${Date.now()}`,
+        BASE_URL
+      ),
+      actor: ctx.getActorUri(row.handle),
+      object: follow
+    });
+    await ctx.sendActivity(
+      { identifier: row.handle },
+      [{ id: new URL(row.actorId), inboxId: new URL(row.inboxUrl) }],
+      accept,
+      { immediate: true, preferSharedInbox: true }
+    );
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      code: error?.code,
+      error: error?.message || String(error)
+    };
+  }
+}
+
+function pendingAcceptKey(handle, actorId) {
+  return `${handle}\u0000${actorId}`;
+}
+
+/**
+ * Park an Accept for later. Replaces any previous entry for the same pair so
+ * a Follow replayed by the remote does not multiply the queue.
+ * @param {Object} row
+ * @returns {void}
+ */
+function queuePendingAccept(row) {
+  const key = pendingAcceptKey(row.handle, row.actorId);
+  const rows = stores
+    .readPendingAccepts()
+    .filter((entry) => pendingAcceptKey(entry.handle, entry.actorId) !== key);
+  const attempts = (row.attempts || 0) + 1;
+  rows.push({
+    ...row,
+    attempts,
+    queuedAt: row.queuedAt || new Date().toISOString(),
+    nextAttemptAt: new Date(Date.now() + acceptBackoffMs(attempts)).toISOString()
+  });
+  stores.writePendingAccepts(rows.slice(-500));
+}
+
+/**
+ * Forget a parked Accept (delivered, or the follow was undone).
+ * @param {string} handle
+ * @param {string} actorId
+ * @returns {void}
+ */
+function dropPendingAccept(handle, actorId) {
+  const key = pendingAcceptKey(handle, actorId);
+  const rows = stores.readPendingAccepts();
+  const kept = rows.filter(
+    (entry) => pendingAcceptKey(entry.handle, entry.actorId) !== key
+  );
+  if (kept.length !== rows.length) stores.writePendingAccepts(kept);
+}
+
+/**
+ * Work the deferred-Accept queue. Called at boot, on a timer, and on demand
+ * via `POST /api/federation/accepts/retry`.
+ *
+ * @param {{force?:boolean}} [options] - `force` ignores the backoff schedule.
+ * @returns {Promise<{pending:number, delivered:number, failed:number, abandoned:number}>}
+ */
+async function retryPendingAccepts(options = {}) {
+  const rows = stores.readPendingAccepts();
+  if (!rows.length) return { pending: 0, delivered: 0, failed: 0, abandoned: 0 };
+
+  const now = Date.now();
+  const ctx = federation.createContext(new URL(BASE_URL), undefined);
+  const keep = [];
+  let delivered = 0;
+  let failed = 0;
+  let abandoned = 0;
+
+  for (const row of rows) {
+    const due =
+      options.force ||
+      !row.nextAttemptAt ||
+      Date.parse(row.nextAttemptAt) <= now;
+    if (!due) {
+      keep.push(row);
+      continue;
+    }
+    if ((row.attempts || 0) >= MAX_ACCEPT_ATTEMPTS) {
+      abandoned += 1;
+      event("activitypub", "follow.accept.abandoned", {
+        recipient: row.handle,
+        actor: row.actorId,
+        attempts: row.attempts,
+        error: row.lastError
+      });
+      continue;
+    }
+    const outcome = await deliverAccept(ctx, row);
+    if (outcome.ok) {
+      delivered += 1;
+      event("activitypub", "follow.accepted", {
+        recipient: row.handle,
+        actor: row.actorId,
+        deliveredTo: row.inboxUrl,
+        retry: true,
+        attempts: row.attempts
+      });
+      continue;
+    }
+    failed += 1;
+    const attempts = (row.attempts || 0) + 1;
+    keep.push({
+      ...row,
+      attempts,
+      lastError: outcome.error,
+      nextAttemptAt: new Date(now + acceptBackoffMs(attempts)).toISOString()
+    });
+    event("activitypub", "follow.accept.retry_failed", {
+      recipient: row.handle,
+      actor: row.actorId,
+      attempts,
+      error: outcome.error
+    });
+  }
+
+  stores.writePendingAccepts(keep);
+  return { pending: keep.length, delivered, failed, abandoned };
+}
+
+/**
+ * Deliver one activity to a set of followers, one inbox at a time, collecting
+ * per-inbox outcomes instead of aborting the batch on the first rejection.
+ *
+ * Fedify's `sendActivity(..., "followers", ...)` fans out under a `Promise.all`,
+ * so a single bad inbox rejects the whole call and the caller cannot tell which
+ * one failed — or whether anyone got it. Addressing each inbox explicitly costs
+ * one request per *distinct* inbox (shared inboxes are already deduplicated in
+ * the follower store) and makes the report exact.
+ *
+ * @param {string} handle - The sending local actor.
+ * @param {Object} activity - A Fedify activity object.
+ * @param {Object} [options]
+ * @param {string} [options.traceId]
+ * @returns {Promise<{followers:number, inboxes:number, delivered:number,
+ *                    failures:Array<{inbox:string, recipients:number, error:string}>}>}
+ */
+async function deliverToFollowers(handle, activity, options = {}) {
+  const rows = followerRows(handle);
+  const byInbox = new Map();
+  for (const row of rows) {
+    if (!row?.inboxUrl || !row?.actorId) continue;
+    if (!byInbox.has(row.inboxUrl)) byInbox.set(row.inboxUrl, []);
+    byInbox.get(row.inboxUrl).push(row.actorId);
+  }
+
+  // One preflight for the whole batch: if the origin is unusable, nothing here
+  // can succeed and the caller should hear a single clear reason.
+  assertDeliverable(byInbox.keys());
+
+  const ctx = federation.createContext(new URL(BASE_URL), undefined);
+  const failures = [];
+  let delivered = 0;
+
+  for (const [inboxUrl, actorIds] of byInbox) {
+    try {
+      await ctx.sendActivity(
+        { identifier: handle },
+        actorIds.map((actorId) => ({
+          id: new URL(actorId),
+          inboxId: new URL(inboxUrl)
+        })),
+        activity,
+        { immediate: true, preferSharedInbox: true }
+      );
+      delivered += actorIds.length;
+    } catch (error) {
+      failures.push({
+        inbox: inboxUrl,
+        recipients: actorIds.length,
+        error: error?.message || String(error)
+      });
+      event("activitypub", "delivery.failed", {
+        trace: options.traceId,
+        actor: handle,
+        inbox: inboxUrl,
+        error
+      });
+    }
+  }
+
+  return { followers: rows.length, inboxes: byInbox.size, delivered, failures };
+}
 
 function publicRequestUrl(req) {
   debugI("publicRequestUrl: deriving externally visible request URL");
@@ -796,20 +1197,169 @@ async function announcePost(post, traceId) {
     actor: post.actor,
     followers
   });
-  await ctx.sendActivity(
-    { identifier: post.actor },
-    "followers",
-    activity,
-    { immediate: true, preferSharedInbox: true }
-  );
+  const result = await deliverToFollowers(post.actor, activity, { traceId });
   event("activitypub", "delivery.done", {
     trace: traceId,
     activity: activityId,
-    followers
+    followers: result.followers,
+    delivered: result.delivered,
+    failed: result.failures.length
   });
-  return { followers };
+  return { activity: activityId.href, ...result };
 }
 
+/**
+ * `announcePost` that reports instead of throwing.
+ *
+ * A post is durable the moment it is written to disk; a delivery problem is a
+ * separate, later fact about the network. Collapsing the two into one 500
+ * loses the post id the caller needs in order to retry, so the create route
+ * answers 201 and hands back a delivery report.
+ *
+ * @param {Object} post
+ * @param {string} [traceId]
+ * @returns {Promise<Object>} A delivery report with an `ok` flag.
+ */
+async function safeAnnounce(post, traceId) {
+  try {
+    const result = await announcePost(post, traceId);
+    return {
+      ok: result.failures.length === 0,
+      ...result
+    };
+  } catch (error) {
+    event("activitypub", "delivery.blocked", {
+      trace: traceId,
+      postId: post.id,
+      actor: post.actor,
+      code: error?.code,
+      error
+    });
+    return {
+      ok: false,
+      code: error?.code || "DELIVERY_ERROR",
+      error: error?.message || String(error),
+      followers: followerRows(post.actor).length,
+      delivered: 0,
+      failures: []
+    };
+  }
+}
+
+
+/**
+ * Render a local actor exactly as a remote server would read it.
+ *
+ * @param {string} handle
+ * @returns {Promise<Object|null>} JSON-LD, or null for an unknown handle.
+ */
+async function renderActor(handle) {
+  const ctx = federation.createContext(new URL(BASE_URL), undefined);
+  const person = await buildActorPerson(ctx, handle);
+  return person ? person.toJsonLd() : null;
+}
+
+/**
+ * Push the current profile to the actor's followers as `Update(Person)`.
+ *
+ * Remote servers cache actor documents (and this deployment's nginx caches
+ * them too), so editing `data/profiles.json` changes nothing on anyone else's
+ * timeline until an Update goes out. The Person is embedded in the activity,
+ * so receivers do not have to re-fetch anything.
+ *
+ * @param {string} handle
+ * @param {string} [traceId]
+ * @returns {Promise<Object>} A delivery report with an `ok` flag.
+ */
+async function publishProfileUpdate(handle, traceId) {
+  const ctx = federation.createContext(new URL(BASE_URL), undefined);
+  const person = await buildActorPerson(ctx, handle);
+  if (!person) {
+    throw Object.assign(new Error(`Unknown actor: ${handle}.`), { status: 404 });
+  }
+  const activity = new Update({
+    id: new URL(
+      `/federation/activities/update-${handle}-${Date.now()}`,
+      BASE_URL
+    ),
+    actor: ctx.getActorUri(handle),
+    object: person,
+    tos: [PUBLIC_COLLECTION],
+    ccs: [ctx.getFollowersUri(handle)]
+  });
+  event("activitypub", "profile.update.start", {
+    trace: traceId,
+    actor: handle,
+    followers: followerRows(handle).length
+  });
+  try {
+    const result = await deliverToFollowers(handle, activity, { traceId });
+    event("activitypub", "profile.update.done", {
+      trace: traceId,
+      actor: handle,
+      delivered: result.delivered,
+      failed: result.failures.length
+    });
+    return { ok: result.failures.length === 0, ...result };
+  } catch (error) {
+    event("activitypub", "profile.update.blocked", {
+      trace: traceId,
+      actor: handle,
+      code: error?.code,
+      error
+    });
+    return {
+      ok: false,
+      code: error?.code || "DELIVERY_ERROR",
+      error: error?.message || String(error),
+      followers: followerRows(handle).length,
+      delivered: 0,
+      failures: []
+    };
+  }
+}
+
+/**
+ * One place that answers "can this instance federate right now, and if not,
+ * why". Surfaced on `/healthz` and, in full, on `/api/federation/diagnostics`.
+ *
+ * @returns {Object}
+ */
+function federationDiagnostics() {
+  const followers = stores.readFollowers();
+  const pending = stores.readPendingAccepts();
+  const remoteInboxes = new Set();
+  for (const rows of Object.values(followers)) {
+    for (const row of Array.isArray(rows) ? rows : []) {
+      if (row?.inboxUrl) remoteInboxes.add(row.inboxUrl);
+    }
+  }
+  const blocked = originLib.undeliverableInboxes(BASE_URL, remoteInboxes);
+  return {
+    baseUrl: BASE_URL,
+    origin: ORIGIN_INFO,
+    allowPrivateOrigin: ALLOW_PRIVATE_ORIGIN,
+    canFederate: ORIGIN_INFO.federable,
+    reason: ORIGIN_INFO.federable
+      ? null
+      : ORIGIN_INFO.private
+        ? originLib.explainPrivateOrigin(BASE_URL, blocked)
+        : `The public origin ${BASE_URL} is plain http; most servers refuse to federate over http.`,
+    followerCount: Object.values(followers).reduce(
+      (total, rows) => total + (Array.isArray(rows) ? rows.length : 0),
+      0
+    ),
+    remoteInboxes: remoteInboxes.size,
+    undeliverableInboxes: blocked,
+    pendingAccepts: pending.map((row) => ({
+      handle: row.handle,
+      actor: row.actorId,
+      attempts: row.attempts,
+      nextAttemptAt: row.nextAttemptAt,
+      lastError: row.lastError
+    }))
+  };
+}
 
 /**
  * Build the Express application: the client static layer, the Fedify HTTP
@@ -839,14 +1389,15 @@ async function emitDeleteForPost(post, traceId) {
   });
   const followers = followerRows(post.actor).length;
   event("activitypub", "delete.start", { trace: traceId, postId: post.id, actor: post.actor, followers });
-  await ctx.sendActivity(
-    { identifier: post.actor },
-    "followers",
-    activity,
-    { immediate: true, preferSharedInbox: true }
-  );
-  event("activitypub", "delete.done", { trace: traceId, postId: post.id, followers });
-  return { followers };
+  const result = await deliverToFollowers(post.actor, activity, { traceId });
+  event("activitypub", "delete.done", {
+    trace: traceId,
+    postId: post.id,
+    followers: result.followers,
+    delivered: result.delivered,
+    failed: result.failures.length
+  });
+  return result;
 }
 
 /**
@@ -867,15 +1418,15 @@ async function emitBoost(filterHandle, post, traceId) {
     tos: [PUBLIC_COLLECTION],
     ccs: [ctx.getFollowersUri(filterHandle)]
   });
-  const followers = followerRows(filterHandle).length;
-  await ctx.sendActivity(
-    { identifier: filterHandle },
-    "followers",
-    activity,
-    { immediate: true, preferSharedInbox: true }
-  );
-  event("activitypub", "echo.boost", { filter: filterHandle, postId: post.id, followers });
-  return { followers };
+  const result = await deliverToFollowers(filterHandle, activity, { traceId });
+  event("activitypub", "echo.boost", {
+    filter: filterHandle,
+    postId: post.id,
+    followers: result.followers,
+    delivered: result.delivered,
+    failed: result.failures.length
+  });
+  return result;
 }
 
 /**
@@ -948,7 +1499,7 @@ async function emitDigestQuote(filter, now, traceId) {
     quoteAuthorizationUrl,
     traceId
   });
-  const delivery = await announcePost(post, traceId);
+  const delivery = await safeAnnounce(post, traceId);
   event("activitypub", "digest.published", {
     filter: handle,
     postId,
@@ -1123,7 +1674,7 @@ function createApp() {
     actors: ACTORS,
     adminUser: ADMIN_USER,
     adminPass: ADMIN_PASS,
-    announce: announcePost,
+    announce: safeAnnounce,
     afterPublish: deliverEchoes,
     onNewsChange: invalidateNews
   }));
@@ -1134,6 +1685,15 @@ function createApp() {
     baseUrl: BASE_URL,
     actors: [...ACTORS, ...FILTER_HANDLES],
     xml
+  }));
+
+  app.use("/api/actors", createProfileRouter({
+    profileStore,
+    isServableActor,
+    listActors: () => [...ACTORS, ...FILTER_HANDLES],
+    requireToken: requirePostToken,
+    publishUpdate: publishProfileUpdate,
+    renderActor
   }));
 
   app.use("/latest", createLatestRouter({
@@ -1261,11 +1821,14 @@ function createApp() {
         file: path.join(POST_DIR, `${post.id}.json`)
       });
       const delivery = publish
-        ? await announcePost(post, req.flow.id)
+        ? await safeAnnounce(post, req.flow.id)
         : null;
       req.flow.next(publish ? "POST_PUBLISHED" : "POST_NOT_PUBLISHED", {
         postId: post.id,
-        followers: delivery?.followers || 0
+        followers: delivery?.followers || 0,
+        delivered: delivery?.delivered,
+        deliveryOk: delivery ? delivery.ok : undefined,
+        deliveryError: delivery?.error
       });
       return res.status(201).json({
         ok: true,
@@ -1290,15 +1853,25 @@ function createApp() {
         postId: post.id,
         actor: post.actor
       });
-      const delivery = await announcePost(post, req.flow.id);
+      const delivery = await safeAnnounce(post, req.flow.id);
       req.flow.next("POST_PUBLISHED", {
         postId: post.id,
-        followers: delivery.followers
+        followers: delivery.followers,
+        delivered: delivery.delivered,
+        deliveryOk: delivery.ok
       });
-      return res.json({
-        ok: true,
+      // An explicit announce is a request to deliver, so a total failure is an
+      // error status. A partial failure still answers 200 with the detail.
+      const totalFailure =
+        !delivery.ok && delivery.delivered === 0 && delivery.followers > 0;
+      return res.status(totalFailure ? 502 : 200).json({
+        ok: !totalFailure,
         post: publicPost(post),
-        published: true,
+        published: !totalFailure,
+        message: totalFailure
+          ? delivery.error ||
+            `Delivery failed for every inbox (${delivery.failures.length}).`
+          : undefined,
         delivery
       });
     } catch (error) {
@@ -1455,8 +2028,30 @@ function createApp() {
       ok: true,
       baseUrl: BASE_URL,
       actors: ACTORS,
-      filters: ENABLED_FILTERS.map((f) => ({ handle: f.handle, mode: f.spec.mode }))
+      filters: ENABLED_FILTERS.map((f) => ({ handle: f.handle, mode: f.spec.mode })),
+      // Federation readiness in one field, so a deploy check catches a private
+      // origin before a remote server does.
+      federation: {
+        canFederate: ORIGIN_INFO.federable,
+        originIsPrivate: ORIGIN_INFO.private,
+        originIsInsecure: ORIGIN_INFO.insecure
+      }
     });
+  });
+
+  app.get("/api/federation/diagnostics", requirePostToken, (_req, res) => {
+    res.json({ ok: true, ...federationDiagnostics() });
+  });
+
+  /** Force the deferred-Accept queue instead of waiting for the backoff. */
+  app.post("/api/federation/accepts/retry", requirePostToken, async (req, res, next) => {
+    try {
+      const result = await retryPendingAccepts({ force: true });
+      req.flow?.next("ACCEPTS_RETRIED", result);
+      return res.json({ ok: true, ...result });
+    } catch (error) {
+      return next(error);
+    }
   });
 
   app.use((req, res) => {
@@ -1488,6 +2083,51 @@ function createApp() {
  */
 function startServer() {
   debugS("startServer: starting HTTP server host=%s port=%d", HOST, PORT);
+
+  // Say it once, loudly, at boot. The alternative is discovering it later as a
+  // 500 on an inbox POST with the cause three network hops away.
+  if (!ORIGIN_INFO.federable && !ALLOW_PRIVATE_ORIGIN && process.env.NODE_ENV !== "test") {
+    const reason = ORIGIN_INFO.private
+      ? originLib.explainPrivateOrigin(BASE_URL)
+      : `The public origin ${BASE_URL} is plain http; most servers refuse to federate over http.`;
+    const banner = [
+      "",
+      "  ┌───────────────────────────────────────────────────────────────────┐",
+      "  │  FEDERATION IS DISABLED IN PRACTICE                               │",
+      "  └───────────────────────────────────────────────────────────────────┘",
+      `  ${reason}`,
+      "",
+      "  Set GSTMXX_ALLOW_PRIVATE_ORIGIN=1 to silence this on a LAN demo,",
+      "  or GSTMXX_STRICT_ORIGIN=1 to refuse to start at all.",
+      ""
+    ].join("\n");
+    console.warn(banner);
+    if (STRICT_ORIGIN) {
+      console.error("GSTMXX_STRICT_ORIGIN is set. Refusing to start.");
+      process.exit(1);
+    }
+  }
+
+  // Deferred Accepts: work the queue at boot (a follow that arrived while the
+  // origin was misconfigured resolves itself after the fix) and on a timer.
+  const acceptIntervalMs = parsePositiveInt(
+    process.env.GSTMXX_ACCEPT_RETRY_INTERVAL_MS,
+    60 * 1000
+  );
+  setImmediate(() =>
+    retryPendingAccepts().catch((error) =>
+      console.error("[accepts] boot retry failed:", error)
+    )
+  );
+  const acceptTimer = setInterval(
+    () =>
+      retryPendingAccepts().catch((error) =>
+        console.error("[accepts] tick failed:", error)
+      ),
+    acceptIntervalMs
+  );
+  if (typeof acceptTimer.unref === "function") acceptTimer.unref();
+
   startStaleUploadCleanup({
     uploadStore,
     uploadsDir: paths.UPLOADS_DIR,
@@ -1513,6 +2153,7 @@ function startServer() {
       host: HOST,
       port: PORT,
       baseUrl: BASE_URL,
+      canFederate: ORIGIN_INFO.federable,
       dataDir: DATA_DIR
     });
     console.log(`Browser: ${BASE_URL}/`);
@@ -1528,9 +2169,12 @@ function startServer() {
 
 module.exports = {
   createApp,
-  startServer
+  startServer,
+  federationDiagnostics,
+  retryPendingAccepts
 };
 
 if (require.main === module) {
   startServer();
 }
+

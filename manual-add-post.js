@@ -157,6 +157,21 @@ async function main(argv = process.argv.slice(2)) {
       }
     );
     console.log(JSON.stringify(result, null, 2));
+
+    // The post is stored even when delivery fails, so a delivery problem is
+    // reported rather than swallowed — and the exit code says so.
+    const delivery = result && result.delivery;
+    if (delivery && delivery.ok === false) {
+      console.warn("\nThe post was created but NOT delivered to every follower.");
+      if (delivery.error) console.warn(delivery.error);
+      for (const failure of delivery.failures || []) {
+        console.warn(`  ${failure.inbox}: ${failure.error}`);
+      }
+      console.warn(
+        `\nRetry with:\n  npm run post -- --server ${options.serverUrl || "http://127.0.0.1:4040"} --announce ${result.post.id}`
+      );
+      process.exitCode = 3;
+    }
   } catch (error) {
     console.error(`Could not add post:\n${error.message}`);
     process.exitCode = 1;
@@ -169,3 +184,4 @@ module.exports = {
   main,
   parseArgs
 };
+

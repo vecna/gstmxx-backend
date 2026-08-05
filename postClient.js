@@ -155,10 +155,75 @@ async function announcePost(serverUrl, postId, options = {}) {
   return body;
 }
 
+/**
+ * Minimal JSON/binary request helper shared by the profile CLI.
+ *
+ * Kept separate from `createPost` on purpose: that function's error strings are
+ * tuned for the "post did not go out" story, which would read oddly when the
+ * failure is an oversized avatar.
+ *
+ * @param {string|URL} serverUrl - Control API base.
+ * @param {string} pathname - e.g. `/api/actors/video/profile`.
+ * @param {Object} [options]
+ * @param {string} [options.method="GET"]
+ * @param {Object} [options.json] - JSON body.
+ * @param {Buffer} [options.body] - Raw body (used with `contentType`).
+ * @param {string} [options.contentType]
+ * @param {string} [options.token] - Bearer token.
+ * @param {number} [options.timeoutMs=20000]
+ * @returns {Promise<Object>} The parsed response body.
+ */
+async function apiRequest(serverUrl, pathname, options = {}) {
+  const target = new URL(pathname, normalizeServerUrl(serverUrl));
+  const headers = {};
+  if (options.token) headers.Authorization = `Bearer ${options.token}`;
+
+  let body;
+  if (options.json !== undefined) {
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify(options.json);
+  } else if (options.body !== undefined) {
+    headers["Content-Type"] = options.contentType || "application/octet-stream";
+    body = options.body;
+  }
+
+  let response;
+  try {
+    response = await fetch(target, {
+      method: options.method || "GET",
+      headers,
+      body,
+      signal: AbortSignal.timeout(options.timeoutMs || 20_000)
+    });
+  } catch (error) {
+    const wrapped = new Error(
+      `Request did not reach the API.\nTarget: ${target.href}\nCause: ${errorChain(error)}\nHint: ${connectionHint(error)}`
+    );
+    wrapped.cause = error;
+    throw wrapped;
+  }
+
+  const rawBody = await response.text();
+  let parsed;
+  try {
+    parsed = rawBody ? JSON.parse(rawBody) : {};
+  } catch {
+    parsed = { rawBody };
+  }
+  if (!response.ok) {
+    throw new Error(
+      `API returned ${response.status} ${response.statusText}.\nTarget: ${target.href}\nResponse: ${parsed.message || rawBody || "(empty body)"}`
+    );
+  }
+  return parsed;
+}
+
 module.exports = {
   announcePost,
+  apiRequest,
   createPost,
   loadEnvFile,
   localApiUrl,
   normalizeServerUrl
 };
+
