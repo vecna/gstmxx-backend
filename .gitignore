@@ -4,3 +4,4 @@ client-interface
 data/
 c2p-*
 coverage/
+env
