@@ -196,7 +196,7 @@ function create(postsDirectory, content, actor, options = {}) {
     createdAt: new Date().toISOString()
   };
 
-  for (const key of ["attachment", "quoteUrl", "quoteAuthorizationUrl", "title", "subtitle"]) {
+  for (const key of ["attachment", "quoteUrl", "quoteAuthorizationUrl", "title", "subtitle", "sourceUploadId", "ghostyleId"]) {
     if (options[key] != null) post[key] = options[key];
   }
 

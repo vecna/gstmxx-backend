@@ -176,6 +176,8 @@ function createAdminRouter(ctx) {
       const post = ctx.postStore.create(ctx.postDir, content, actor, {
         attachment,
         media: mediaClass,
+        sourceUploadId: record.id,
+        ghostyleId: record.ghostyleId || null,
         traceId: req.flow && req.flow.id
       });
 

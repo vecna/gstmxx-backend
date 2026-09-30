@@ -358,6 +358,29 @@
         }
       }
     },
+    "/api/gallery": {
+      "get": {
+        "tags": ["Posts"],
+        "summary": "List recent published pictures for the shared gallery",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 24 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Newest published image posts. This public read-only route permits cross-origin reads.",
+            "headers": {
+              "Access-Control-Allow-Origin": { "schema": { "type": "string", "const": "*" } }
+            },
+            "content": { "application/json": { "schema": { "type": "object", "additionalProperties": true } } }
+          }
+        }
+      }
+    },
     "/api/posts": {
       "get": {
         "tags": ["Posts"],

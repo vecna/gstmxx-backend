@@ -5,6 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node --env-file-if-exists=env server.js",
+    "serve": "npm start",
     "dev": "node --watch --env-file-if-exists=env server.js",
     "debug": "DEBUG=gstmxx:flow,gstmxx:http,gstmxx:store,gstmxx:activitypub node --env-file-if-exists=env server.js",
     "test": "node --test $(find test -maxdepth 1 -name '*.test.js' ! -name 'openapi.full-cycle.test.js' | sort)",
@@ -38,4 +39,3 @@
     "@opentelemetry/core": ">=2.8.0"
   }
 }
-

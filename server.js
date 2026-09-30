@@ -57,6 +57,7 @@ const { createAdminRouter } = require("./routes/admin.js");
 const { createFeedsRouter } = require("./routes/feeds.js");
 const { createLatestRouter } = require("./routes/latest.js");
 const { createProfileRouter } = require("./routes/profile.js");
+const { createGalleryRouter } = require("./routes/gallery.js");
 const { createProfileStore } = require("./profileStore.js");
 const originLib = require("./lib/origin.js");
 const news = require("./services/news.js");
@@ -112,7 +113,11 @@ const STRICT_ORIGIN = /^(1|true|yes|on)$/i.test(
 const { DATA_DIR, POST_DIR } = paths;
 const POST_TOKEN = process.env.LAB_POST_TOKEN || "big-oopsie";
 const PUBLIC_DIR = path.join(__dirname, "public");
-const CLIENT_INTERFACE_DIR = path.resolve(path.join(__dirname, "client-interface"));
+const CLIENT_INTERFACE_DIR = path.resolve(
+  process.env.GSTMXX_CLIENT_INTERFACE_DIR ||
+    process.env.LAB_CLIENT_INTERFACE_DIR ||
+    path.join(__dirname, "client-interface")
+);
 const OPENAPI_SPEC_PATH = path.join(__dirname, "tutorials", "openapi.json");
 const ACTORS = ["video", "ghostyles", "news", "clipboard"];
 const ADMIN_USER = process.env.GSTMXX_ADMIN_USER || "admin";
@@ -1659,6 +1664,12 @@ function createApp() {
     }
   }));
 
+  app.use("/api/gallery", createGalleryRouter({
+    postStore,
+    postDir: POST_DIR,
+    baseUrl: BASE_URL
+  }));
+
   app.use("/api/admin", createAdminRouter({
     uploadStore,
     uploadsDir: paths.UPLOADS_DIR,
@@ -2177,4 +2188,3 @@ module.exports = {
 if (require.main === module) {
   startServer();
 }
-

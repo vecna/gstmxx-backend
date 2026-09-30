@@ -75,6 +75,11 @@ mounts Fedify on `/.well-known` and `/federation`, serves the lab UI from
 `public/`, serves an optional built client from `client-interface/`, exposes the
 control API, and starts background cleanup/digest work.
 
+Use `npm run serve` (an alias of `npm start`) to serve the staged client and API
+from one origin. `GSTMXX_CLIENT_INTERFACE_DIR` or the legacy
+`LAB_CLIENT_INTERFACE_DIR` can point at an isolated staged client directory;
+the frontend integration harness uses this to avoid modifying the checkout.
+
 Run locally:
 
 ```bash

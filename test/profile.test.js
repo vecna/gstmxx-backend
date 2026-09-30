@@ -22,7 +22,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const PORT = 4071;
+const PORT = 4072;
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "gstmxx-profile-data-"));
 const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), "gstmxx-profile-store-"));
 
