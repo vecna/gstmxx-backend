@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { galleryItem, parseLimit, DEFAULT_LIMIT, MAX_LIMIT } = require("../routes/gallery.js");
+const { galleryItem, parseLimit, encodeCursor, decodeCursor, isOlderThan, DEFAULT_LIMIT, MAX_LIMIT } = require("../routes/gallery.js");
 
 test("galleryItem exposes image fields and rejects non-images", () => {
   const item = galleryItem({
@@ -29,4 +29,12 @@ test("gallery limits are bounded", () => {
   assert.equal(parseLimit("0"), DEFAULT_LIMIT);
   assert.equal(parseLimit("12"), 12);
   assert.equal(parseLimit("999"), MAX_LIMIT);
+});
+
+test("gallery cursor is opaque, round-trips, and orders ties by id", () => {
+  const post = { createdAt: "2026-09-30T12:00:00.000Z", id: "bbb" };
+  assert.deepEqual(decodeCursor(encodeCursor(post)), post);
+  assert.equal(decodeCursor("not-a-cursor"), null);
+  assert.equal(isOlderThan({ createdAt: post.createdAt, id: "aaa" }, post), true);
+  assert.equal(isOlderThan({ createdAt: post.createdAt, id: "ccc" }, post), false);
 });

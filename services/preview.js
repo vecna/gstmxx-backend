@@ -69,6 +69,9 @@ function renderPostPage(post, options) {
   const description = post.subtitle ? truncate(post.subtitle, 200) : truncate(post.content);
   const ogImage = ogImageFor(post);
   const isVideo = post.attachment && String(post.attachment.mediaType).startsWith("video/");
+  const likes = Number.isInteger(post.likes) ? post.likes : 0;
+  const galleryActor = options.galleryActor || "@ghostyles-pictures@ghostmaxxing.vecna.eu";
+  const galleryFollowers = Number.isInteger(options.galleryFollowers) ? options.galleryFollowers : 0;
 
   const mediaBlock = !post.attachment
     ? ""
@@ -102,6 +105,11 @@ function renderPostPage(post, options) {
       img, video { display: block; width: 100%; border-radius: 10px; background: #000; margin: 16px 0; }
       p { white-space: pre-wrap; word-break: break-word; }
       a { color: #7db3ff; }
+      .social { margin-top: 24px; padding-top: 18px; border-top: 1px solid #ffffff2b; }
+      .social__counts { color: #b8c0cc; font-size: 14px; }
+      .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+      button, .button { border: 1px solid #7db3ff; border-radius: 6px; padding: 8px 12px; background: transparent; color: #dceaff; font: inherit; cursor: pointer; text-decoration: none; }
+      .fediverse-note { color: #b8c0cc; font-size: 14px; }
     </style>
   </head>
   <body>
@@ -111,8 +119,30 @@ function renderPostPage(post, options) {
       ${post.subtitle ? `<p class="deck">${escapeHtml(post.subtitle)}</p>` : ""}
       ${mediaBlock}
       <p>${escapeHtml(post.content)}</p>
-      <p><a href="${escapeHtml(url)}">Permalink</a></p>
+      <section class="social" aria-labelledby="social-title">
+        <h2 id="social-title">Share this result</h2>
+        <p class="social__counts">${likes} ${likes === 1 ? "like" : "likes"} known to this server</p>
+        <div class="actions">
+          <button type="button" id="share-post">Share</button>
+          <button type="button" id="copy-post">Copy link</button>
+          <a class="button" href="${escapeHtml(new URL("/gallery.html", baseUrl).href)}">Shared gallery</a>
+        </div>
+        <p>This page is also the post’s ActivityPub address. Fediverse servers can fetch the same URL as a federated Note.</p>
+        <p class="fediverse-note">Follow the complete picture gallery as <strong>${escapeHtml(galleryActor)}</strong>${galleryFollowers ? ` · ${galleryFollowers} ${galleryFollowers === 1 ? "follower" : "followers"}` : ""}. Search for that handle in your Fediverse client.</p>
+      </section>
     </main>
+    <script>
+      (() => {
+        const url = location.href;
+        const description = document.querySelector('meta[property="og:description"]')?.content || '';
+        const copy = () => navigator.clipboard && navigator.clipboard.writeText(url);
+        document.getElementById("copy-post").addEventListener("click", copy);
+        document.getElementById("share-post").addEventListener("click", () => {
+          if (navigator.share) navigator.share({ title: document.title, text: description, url }).catch(() => {});
+          else copy();
+        });
+      })();
+    </script>
   </body>
 </html>
 `;

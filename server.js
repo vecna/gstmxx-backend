@@ -1667,7 +1667,8 @@ function createApp() {
   app.use("/api/gallery", createGalleryRouter({
     postStore,
     postDir: POST_DIR,
-    baseUrl: BASE_URL
+    baseUrl: BASE_URL,
+    followerCount: (handle) => followerRows(handle).length
   }));
 
   app.use("/api/admin", createAdminRouter({
@@ -1903,7 +1904,11 @@ function createApp() {
     const wantsActivityPub = /application\/(activity|ld)\+json/i.test(accept);
     if (!wantsActivityPub) {
       req.flow.next("POST_PAGE_SERVED", { postId: post.id });
-      return res.type("html").send(preview.renderPostPage(post, { baseUrl: BASE_URL }));
+      return res.type("html").send(preview.renderPostPage(post, {
+        baseUrl: BASE_URL,
+        galleryActor: `@ghostyles-pictures@${new URL(BASE_URL).host}`,
+        galleryFollowers: followerRows("ghostyles-pictures").length
+      }));
     }
     try {
       const object = await activityPubPost(post, req.flow.id);

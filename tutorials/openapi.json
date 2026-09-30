@@ -368,6 +368,13 @@
             "in": "query",
             "required": false,
             "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 24 }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Opaque nextCursor returned by the previous page.",
+            "schema": { "type": "string" }
           }
         ],
         "responses": {
