@@ -13,7 +13,7 @@ async function runStep4(t, cycle) {
     cycle.hit("POST /api/digests/run");
     const payload = {
       force: true,
-      now: "2026-07-30T12:00:00.000Z"
+      now: new Date().toISOString()
     };
 
     const res = await fetch(`${cycle.baseUrl}/api/digests/run`, {

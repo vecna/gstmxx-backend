@@ -86,7 +86,23 @@ function createUploadsRouter(ctx) {
     }
   });
 
-  router.post("/", uploadLimiter, upload.single("video"), async (req, res) => {
+  // multer reports an unsupported MIME type or an oversized body by calling
+  // next(err). Without this adapter the error reaches Express's default
+  // handler and the client sees a 500 with a stack trace in the server log.
+  function receiveFile(req, res, next) {
+    upload.single("video")(req, res, (err) => {
+      if (!err) return next();
+      if (err.code === "LIMIT_FILE_SIZE") {
+        return res.status(413).json({ ok: false, message: `File too large. Limit is ${MAX_UPLOAD_BYTES} bytes.` });
+      }
+      if (/Unsupported file type/.test(err.message)) {
+        return res.status(415).json({ ok: false, message: err.message });
+      }
+      return res.status(400).json({ ok: false, message: err.message || "Malformed upload." });
+    });
+  }
+
+  router.post("/", uploadLimiter, receiveFile, async (req, res) => {
     try {
       if (!req.file) {
         return res.status(400).json({ ok: false, message: "No file received." });
@@ -171,6 +187,24 @@ function createUploadsRouter(ctx) {
             federation = { error: error.message };
           }
           ctx.postStore.remove(ctx.postDir, record.postId, req.flow && req.flow.id);
+
+          // Digest filter actors (ghostyles-daily, -weekly, -top-rated) may have
+          // published a quote post pointing at this one. Retire those too, or
+          // followers of the filters keep a post whose quote resolves to 404.
+          const quotedUrl = `/posts/${record.postId}`;
+          const quotes = ctx.postStore.list(ctx.postDir, req.flow && req.flow.id)
+            .filter((p) => typeof p.quoteUrl === "string" && p.quoteUrl.endsWith(quotedUrl));
+          federation.retiredQuotes = [];
+          for (const quote of quotes) {
+            let quoteFederation;
+            try {
+              quoteFederation = await ctx.emitDelete(quote, req.flow && req.flow.id);
+            } catch (error) {
+              quoteFederation = { error: error.message };
+            }
+            ctx.postStore.remove(ctx.postDir, quote.id, req.flow && req.flow.id);
+            federation.retiredQuotes.push({ postId: quote.id, actor: quote.actor, ...quoteFederation });
+          }
         }
       }
       return res.json({
