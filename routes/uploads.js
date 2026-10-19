@@ -17,6 +17,7 @@
  */
 
 const express = require("express");
+const { publicUploadCors } = require("../lib/publicUploadCors.js");
 const multer = require("multer");
 const rateLimit = require("express-rate-limit");
 const path = require("node:path");
@@ -57,6 +58,7 @@ function normalizeKind(kind) {
  */
 function createUploadsRouter(ctx) {
   const router = express.Router();
+  router.use(publicUploadCors);
 
   // Rate limit the public intake per client IP. Trust-proxy is set on the app,
   // so the client IP is the real one behind nginx. Window/limit are overridable
